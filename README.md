@@ -4,9 +4,9 @@ An independent memory management custom node for ComfyUI. Provides Distorch memo
 
 ## Overview
 
-This project was created to address OOM (Out Of Memory) issues in video generation workflows like Upscaling with WAN2.2. The key point is that these OOM errors are caused by **system RAM shortage, not VRAM shortage** (can occur even on 64GB RAM systems depending on resolution and video length).
+This custom node was created to address OOM (Out Of Memory) issues in video generation workflows like Upscaling with WAN2.2. The key point is that these OOM errors are caused by **system RAM shortage, not VRAM shortage** (can occur even on 64GB RAM systems depending on resolution and video length).
 
-Originally implemented as part of MultiGPU nodes, this functionality has been extracted as an independent node for better maintainability and easier installation. Simply place it in the `custom_nodes` folder for easy installation and removal.
+This is a completely original implementation designed specifically for Distorch memory management. Simply place it in the `custom_nodes` folder for easy installation and removal.
 
 ## Features
 
@@ -154,7 +154,7 @@ or
 
 ## License
 
-Apache-2.0
+Apache License 2.0 - See [LICENSE](LICENSE) file for details
 
 ## Contributing
 
