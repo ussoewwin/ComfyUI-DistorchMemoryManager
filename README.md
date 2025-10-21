@@ -170,3 +170,5 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 ### v1.0.0
 - Initial release
 - Basic memory management functionality implemented
+
+
