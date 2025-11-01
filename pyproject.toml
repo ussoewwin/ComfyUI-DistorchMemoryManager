@@ -12,4 +12,4 @@ Repository = "https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager"
 [tool.comfy]
 PublisherId = "ussoewwin"
 DisplayName = "ComfyUI-DistorchMemoryManager"
-
+Icon = "https://raw.githubusercontent.com/nunchaku-tech/nunchaku/96615bd93a1f0d2cf98039fddecfec43ce34cc96/assets/nunchaku.svg"
