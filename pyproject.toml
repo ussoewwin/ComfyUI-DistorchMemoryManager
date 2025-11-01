@@ -12,3 +12,4 @@ Repository = "https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager"
 [tool.comfy]
 PublisherId = "ussoewwin"
 DisplayName = "ComfyUI-DistorchMemoryManager"
+
