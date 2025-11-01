@@ -4,7 +4,7 @@ version = "1.1.0"
 description = "An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling."
 authors = [{ name = "ussoewwin" }]
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.13"
 
 [project.urls]
 Repository = "https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager"
