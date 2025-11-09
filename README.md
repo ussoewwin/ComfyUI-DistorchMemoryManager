@@ -160,6 +160,10 @@ Apache License 2.0 - See [LICENSE](LICENSE) file for details
 
 Bug reports and feature requests are welcome on the GitHub Issues page.
 
+## Release History
+
+- [v1.10](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.10) – Added the LayerUtility: Purge VRAM V2 compatibility node within DisTorch Memory Manager.
+
 ## Changelog
 
 ### v1.1.0
