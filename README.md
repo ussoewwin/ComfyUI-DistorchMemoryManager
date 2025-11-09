@@ -10,7 +10,16 @@ This is a completely original implementation designed specifically for Distorch 
 
 ## Features
 
-### Three Node Types
+### Four Node Types
+
+#### Purge VRAM V2 Compatibility (New in v1.10)
+- **Description**: Restored LayerStyle’s **LayerUtility: Purge VRAM V2** inside the Distortch suite
+- **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle
+- **Input**: Any data type (ANY) passthrough
+- **Options**:
+  - `purge_cache`: Run `gc.collect()`, flush CUDA caches, call `torch.cuda.ipc_collect()`
+  - `purge_models`: Call `comfy.model_management.cleanup_models()` (fallback to `unload_model_to_cpu`)
+  - **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive.
 
 #### Memory Cleaner
 - **Description**: Basic memory cleaning node
