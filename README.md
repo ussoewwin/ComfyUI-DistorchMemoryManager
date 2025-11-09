@@ -13,7 +13,7 @@ This is a completely original implementation designed specifically for Distorch 
 ### Four Node Types
 
 #### Purge VRAM V2 Compatibility (New in v1.10)
-- **Description**: Restored LayerStyle’s **LayerUtility: Purge VRAM V2** inside the Distortch suite
+- **Description**: Restored LayerStyle’s **LayerUtility: Purge VRAM V2** inside the Distortch suite ([original node](https://github.com/chflame163/ComfyUI_LayerStyle))
 - **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle
 - **Input**: Any data type (ANY) passthrough
 - **Options**:
