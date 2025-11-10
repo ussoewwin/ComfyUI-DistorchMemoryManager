@@ -3,10 +3,10 @@ import gc
 import sys
 import os
 
-# ComfyUIのパスを追加
+# Ensure ComfyUI root is on sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-# AnyTypeクラスを定義（purge vramノードと同じ実装）
+# AnyType mirrors the behavior of the original Purge VRAM node
 class AnyType(str):
     """A special class that is always equal in not equal comparisons. Credit to pythongosssss"""
     def __eq__(self, __value: object) -> bool:
@@ -16,7 +16,7 @@ class AnyType(str):
 
 any = AnyType("*")
 
-# clear_memory関数を定義（purge vramノードと同じ実装）
+# Helper used by several nodes to release memory
 def clear_memory():
     import gc
     # Cleanup
@@ -27,8 +27,7 @@ def clear_memory():
 
 class MemoryCleaner:
     """
-    基本的なメモリクリアノード
-    シンプルで安全なメモリ管理を提供
+    Basic memory cleaning node that provides safe default behavior.
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -42,18 +41,17 @@ class MemoryCleaner:
     CATEGORY = "Memory"
 
     def clean_memory(self, anything):
-        # GPUメモリのクリア
+        # Clear GPU memory
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
         
-        # Pythonのガベージコレクション
+        # Run garbage collection on the host
         gc.collect()
         
-        # DisTorchの仮想メモリを解放
+        # Release virtual memory tracked by DisTorch/Comfy
         try:
             import comfy.model_management
-            # 仮想メモリの割り当てをリセット
             if hasattr(comfy.model_management, 'free_memory'):
                 comfy.model_management.free_memory(0, 'cuda:0')
                 comfy.model_management.free_memory(0, 'cpu')
@@ -66,8 +64,7 @@ class MemoryCleaner:
 
 class MemoryManager:
     """
-    包括的なメモリ管理ノード（上級者向け）
-    UI破損対策済みの詳細なメモリ管理機能
+    Advanced memory management node with fine-grained controls.
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -87,23 +84,19 @@ class MemoryManager:
 
     def manage_memory(self, anything, clean_gpu, clean_cpu, force_gc, reset_virtual_memory, restore_original_functions):
         try:
-            # GPUメモリのクリア
             if clean_gpu and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 print("GPU memory cleared")
             
-            # CPUメモリのクリア（注意が必要）
             if clean_cpu:
                 gc.collect()
                 print("CPU memory cleared")
             
-            # 強制ガベージコレクション
             if force_gc:
                 gc.collect()
                 print("Forced garbage collection completed")
             
-            # 仮想メモリのリセット
             if reset_virtual_memory:
                 try:
                     import comfy.model_management
@@ -114,11 +107,9 @@ class MemoryManager:
                 except Exception as e:
                     print(f"Virtual memory reset failed: {e}")
             
-            # 元の関数の復元（必要に応じて）
             if restore_original_functions:
                 try:
                     import comfy.model_management
-                    # 必要に応じて元の関数を復元
                     print("Original functions restored")
                 except Exception as e:
                     print(f"Function restoration failed: {e}")
@@ -133,8 +124,7 @@ class MemoryManager:
 
 class SafeMemoryManager:
     """
-    安全なメモリ管理ノード（推奨）
-    UI破損を完全に防ぐ安全なメモリ管理
+    Recommended memory management node that prioritizes safe cleanup.
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -152,18 +142,15 @@ class SafeMemoryManager:
 
     def safe_manage_memory(self, anything, clean_gpu, force_gc, reset_virtual_memory):
         try:
-            # 安全なメモリクリア
             if clean_gpu and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 print("Safe GPU memory cleared")
             
-            # 安全なガベージコレクション
             if force_gc:
                 gc.collect()
                 print("Safe garbage collection completed")
             
-            # 安全な仮想メモリリセット
             if reset_virtual_memory:
                 try:
                     import comfy.model_management
@@ -182,17 +169,71 @@ class SafeMemoryManager:
         return (anything,)
 
 
-# ノードの登録
+class DisTorchPurgeVRAMV2:
+    """
+    Compatibility clone of the original LayerUtility Purge VRAM V2 node
+    maintained within the Distortch Memory Manager package.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "anything": (any, {}),
+                "purge_cache": ("BOOLEAN", {"default": True}),
+                "purge_models": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = (any,)
+    RETURN_NAMES = ("any",)
+    FUNCTION = "purge_vram"
+    CATEGORY = "DisTorch/Memory"
+
+    def purge_vram(self, anything, purge_cache, purge_models):
+        if purge_cache:
+            gc.collect()
+
+            if torch.cuda.is_available():
+                current_device = torch.cuda.current_device()
+                try:
+                    for idx in range(torch.cuda.device_count()):
+                        torch.cuda.set_device(idx)
+                        torch.cuda.empty_cache()
+                        try:
+                            torch.cuda.ipc_collect()
+                        except Exception:
+                            pass
+                finally:
+                    torch.cuda.set_device(current_device)
+
+        if purge_models:
+            try:
+                import comfy.model_management
+
+                if hasattr(comfy.model_management, "cleanup_models"):
+                    comfy.model_management.cleanup_models()
+                elif hasattr(comfy.model_management, "unload_model_to_cpu"):
+                    comfy.model_management.unload_model_to_cpu()
+            except Exception:
+                pass
+
+        return (anything,)
+
+
+# Register nodes with ComfyUI
 NODE_CLASS_MAPPINGS = {
     "MemoryCleaner": MemoryCleaner,
     "MemoryManager": MemoryManager,
     "SafeMemoryManager": SafeMemoryManager,
+    "DisTorchPurgeVRAMV2": DisTorchPurgeVRAMV2,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MemoryCleaner": "Memory Cleaner",
     "MemoryManager": "Memory Manager",
     "SafeMemoryManager": "Safe Memory Manager",
+    "DisTorchPurgeVRAMV2": "LayerUtility: Purge VRAM V2",
 }
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS'] 
