@@ -171,7 +171,7 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## Release History
 
-- [v1.10](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.10) – Added the LayerUtility: Purge VRAM V2 compatibility node within DisTorch Memory Manager.
 - [v1.10.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.10.1) – Hotfix ensuring DisTorch Purge VRAM V2 node ships inside the package.
+- [v1.10](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.10) – Added the LayerUtility: Purge VRAM V2 compatibility node within DisTorch Memory Manager.
 - v1.1.0 – Added ANY type I/O support, simplified node names, moved category to "Memory".
 - v1.0.0 – Initial release with core memory management features.
