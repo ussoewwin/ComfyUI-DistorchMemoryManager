@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI-DistorchMemoryManager"
-version = "1.10.0"
+version = "1.10.1"
 description = "An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling."
 authors = [{ name = "ussoewwin" }]
 license = { file = "LICENSE" }
