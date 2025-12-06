@@ -39,3 +39,6 @@ Thumbs.db
 # Logs
 *.log
 
+# Release notes (managed via GitHub releases)
+release_notes_*.md
+
