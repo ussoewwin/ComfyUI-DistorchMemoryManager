@@ -1,6 +1,6 @@
 # ComfyUI-DistorchMemoryManager
 
-An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling.
+An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling.Other additional features include purging of SeedVR2 models and several other functions.
 
 ## Overview
 
