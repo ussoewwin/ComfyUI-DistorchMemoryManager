@@ -417,69 +417,151 @@ class DisTorchPurgeVRAMV2:
                             seedvr2_path = seedvr2_candidate
                 
                 if seedvr2_path:
-                    sys.path.insert(0, seedvr2_path)
+                    # Add seedvr2_path to sys.path temporarily
+                    original_path = sys.path[:]
                     try:
-                        from src.core.model_cache import get_global_cache
+                        if seedvr2_path not in sys.path:
+                            sys.path.insert(0, seedvr2_path)
                         
-                        cache = get_global_cache()
-                        dit_cleared = 0
-                        vae_cleared = 0
+                        # Try importing with different methods
+                        cache = None
+                        import_method = None
+                        try:
+                            # Method 1: Direct import
+                            from src.core.model_cache import get_global_cache
+                            cache = get_global_cache()
+                            import_method = "Method 1 (direct import)"
+                        except (ImportError, ModuleNotFoundError) as e1:
+                            try:
+                                # Method 2: Import seedvr2_videoupscaler first
+                                import seedvr2_videoupscaler
+                                from seedvr2_videoupscaler.src.core.model_cache import get_global_cache
+                                cache = get_global_cache()
+                                import_method = "Method 2 (via seedvr2_videoupscaler)"
+                            except (ImportError, ModuleNotFoundError, AttributeError) as e2:
+                                # Method 3: Try to access via already loaded module
+                                if 'seedvr2_videoupscaler' in sys.modules:
+                                    seedvr2_module = sys.modules['seedvr2_videoupscaler']
+                                    if hasattr(seedvr2_module, 'src'):
+                                        from seedvr2_videoupscaler.src.core.model_cache import get_global_cache
+                                        cache = get_global_cache()
+                                        import_method = "Method 3 (via sys.modules)"
                         
-                        # Clear all DiT models
-                        if hasattr(cache, '_dit_models'):
-                            dit_models_copy = dict(cache._dit_models)
-                            for node_id, (model, config) in dit_models_copy.items():
+                        if cache is not None:
+                            if import_method:
+                                print(f"SeedVR2: Cache accessed via {import_method}")
+                            dit_cleared = 0
+                            vae_cleared = 0
+                            
+                            # Debug: Check cache state before clearing
+                            dit_count_before = len(cache._dit_models) if hasattr(cache, '_dit_models') else 0
+                            vae_count_before = len(cache._vae_models) if hasattr(cache, '_vae_models') else 0
+                            runner_count_before = len(cache._runner_templates) if hasattr(cache, '_runner_templates') else 0
+                            
+                            # Log SeedVR2 cache access with detailed info
+                            print(f"SeedVR2: Checking cache (DiT: {dit_count_before}, VAE: {vae_count_before}, Runners: {runner_count_before})")
+                            
+                            # Debug: Check if cache attributes exist and show details
+                            if hasattr(cache, '_dit_models'):
+                                dit_keys = list(cache._dit_models.keys()) if cache._dit_models else []
+                                if dit_keys:
+                                    print(f"SeedVR2: DiT model node IDs: {dit_keys}")
+                                else:
+                                    print("SeedVR2: DiT models dictionary exists but is empty")
+                            else:
+                                print("SeedVR2: _dit_models attribute not found in cache")
+                            
+                            if hasattr(cache, '_vae_models'):
+                                vae_keys = list(cache._vae_models.keys()) if cache._vae_models else []
+                                if vae_keys:
+                                    print(f"SeedVR2: VAE model node IDs: {vae_keys}")
+                                else:
+                                    print("SeedVR2: VAE models dictionary exists but is empty")
+                            else:
+                                print("SeedVR2: _vae_models attribute not found in cache")
+                            
+                            # Clear all DiT models
+                            if hasattr(cache, '_dit_models') and cache._dit_models:
+                                dit_models_copy = dict(cache._dit_models)
+                                for node_id, (model, config) in dit_models_copy.items():
+                                    try:
+                                        # Ensure config has node_id for remove_dit
+                                        if not isinstance(config, dict):
+                                            config = {}
+                                        if 'node_id' not in config:
+                                            config['node_id'] = node_id
+                                        # Use remove_dit to properly clean up
+                                        if cache.remove_dit(config, debug=None):
+                                            dit_cleared += 1
+                                    except Exception as e:
+                                        print(f"Error removing SeedVR2 DiT model {node_id}: {e}")
+                            
+                            # Clear all VAE models
+                            if hasattr(cache, '_vae_models') and cache._vae_models:
+                                vae_models_copy = dict(cache._vae_models)
+                                for node_id, (model, config) in vae_models_copy.items():
+                                    try:
+                                        # Ensure config has node_id for remove_vae
+                                        if not isinstance(config, dict):
+                                            config = {}
+                                        if 'node_id' not in config:
+                                            config['node_id'] = node_id
+                                        # Use remove_vae to properly clean up
+                                        if cache.remove_vae(config, debug=None):
+                                            vae_cleared += 1
+                                    except Exception as e:
+                                        print(f"Error removing SeedVR2 VAE model {node_id}: {e}")
+                            
+                            # Clear runner templates
+                            if hasattr(cache, '_runner_templates') and cache._runner_templates:
+                                runner_count = len(cache._runner_templates)
+                                cache._runner_templates.clear()
+                                if runner_count > 0:
+                                    print(f"Cleared {runner_count} SeedVR2 runner template(s)")
+                            
+                            # Report results
+                            if dit_cleared > 0 or vae_cleared > 0:
+                                print(f"Cleared {dit_cleared} SeedVR2 DiT model(s) and {vae_cleared} VAE model(s)")
+                            elif dit_count_before == 0 and vae_count_before == 0 and runner_count_before == 0:
+                                # Cache is completely empty - SeedVR2 may not have cached models yet
+                                # This is normal if SeedVR2 is used but models aren't cached (cache_model=False)
+                                # Or models were already cleared by SeedVR2 after processing completed
                                 try:
-                                    # Ensure config has node_id for remove_dit
-                                    if not isinstance(config, dict):
-                                        config = {}
-                                    if 'node_id' not in config:
-                                        config['node_id'] = node_id
-                                    # Use remove_dit to properly clean up
-                                    if cache.remove_dit(config, debug=None):
-                                        dit_cleared += 1
-                                except Exception as e:
-                                    print(f"Error removing SeedVR2 DiT model {node_id}: {e}")
-                        
-                        # Clear all VAE models
-                        if hasattr(cache, '_vae_models'):
-                            vae_models_copy = dict(cache._vae_models)
-                            for node_id, (model, config) in vae_models_copy.items():
-                                try:
-                                    # Ensure config has node_id for remove_vae
-                                    if not isinstance(config, dict):
-                                        config = {}
-                                    if 'node_id' not in config:
-                                        config['node_id'] = node_id
-                                    # Use remove_vae to properly clean up
-                                    if cache.remove_vae(config, debug=None):
-                                        vae_cleared += 1
-                                except Exception as e:
-                                    print(f"Error removing SeedVR2 VAE model {node_id}: {e}")
-                        
-                        # Clear runner templates
-                        if hasattr(cache, '_runner_templates'):
-                            runner_count = len(cache._runner_templates)
-                            cache._runner_templates.clear()
-                            if runner_count > 0:
-                                print(f"Cleared {runner_count} SeedVR2 runner template(s)")
-                        
-                        if dit_cleared > 0 or vae_cleared > 0:
-                            print(f"Cleared {dit_cleared} SeedVR2 DiT model(s) and {vae_cleared} VAE model(s)")
-                        elif dit_cleared == 0 and vae_cleared == 0:
-                            print("No SeedVR2 models found in cache")
+                                    import comfy.model_management
+                                    if hasattr(comfy.model_management, "current_loaded_models"):
+                                        # Check if any loaded models might be SeedVR2 models
+                                        seedvr2_model_count = 0
+                                        for loaded_model in comfy.model_management.current_loaded_models:
+                                            if loaded_model is not None and hasattr(loaded_model, "model"):
+                                                model = loaded_model.model
+                                                # Check if model name or type suggests SeedVR2
+                                                model_str = str(type(model)).lower()
+                                                if any(keyword in model_str for keyword in ['seedvr', 'dit', 'video_vae']):
+                                                    seedvr2_model_count += 1
+                                        
+                                        if seedvr2_model_count > 0:
+                                            print(f"SeedVR2: Cache is empty, but found {seedvr2_model_count} potential SeedVR2 model(s) in ComfyUI's model management (not cached in GlobalModelCache)")
+                                        else:
+                                            # cache_model=False (default): Models are never cached in GlobalModelCache and are automatically deleted from memory after processing
+                                            # cache_model=True: Models are cached in GlobalModelCache and remain in memory after processing
+                                            print("SeedVR2: Cache is empty - cache_model option is disabled (False by default). Enable cache_model=True in SeedVR2 nodes to cache models in GlobalModelCache.")
+                                except Exception:
+                                    print("SeedVR2: Cache is empty - cache_model option is disabled (False by default). Enable cache_model=True in SeedVR2 nodes to cache models in GlobalModelCache.")
+                            else:
+                                # Models exist in cache but weren't cleared (shouldn't happen normally)
+                                print(f"SeedVR2 cache state: {dit_count_before} DiT, {vae_count_before} VAE, {runner_count_before} runner template(s) (models may not be cached)")
+                        else:
+                            print("SeedVR2: Could not access GlobalModelCache")
                             
                     except ImportError as e:
                         print(f"SeedVR2 not available or incompatible version: {e}")
                     except Exception as e:
                         print(f"Error purging SeedVR2 models: {e}")
                     finally:
-                        # Remove from path if we added it
-                        if seedvr2_path in sys.path:
-                            sys.path.remove(seedvr2_path)
+                        # Restore original sys.path
+                        sys.path[:] = original_path
                 else:
-                    # SeedVR2 not found - this is normal if SeedVR2 is not installed or not yet loaded
-                    # Don't print error as it's not necessarily a problem
+                    # SeedVR2 path not found - this is normal if SeedVR2 is not installed
                     pass
             except Exception as e:
                 print(f"Error accessing SeedVR2 models: {e}")
