@@ -28,10 +28,10 @@ This is a completely original implementation designed specifically for Distorch 
   * Safely unloads model patches from VRAM
   * Performs cleanup_models_gc() to prevent memory leaks
 
-#### Purge VRAM V2 Compatibility (v1.10, Enhanced in v1.2.0)
+#### Purge VRAM V2 Compatibility (v1.10, Enhanced in v1.2.0, SeedVR2 Support Added)
 
-* **Description**: Restored LayerStyle's **LayerUtility: Purge VRAM V2** inside the Distortch suite (original node) with enhanced model unloading capabilities
-* **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling.
+* **Description**: Restored LayerStyle's **LayerUtility: Purge VRAM V2** inside the Distortch suite (original node) with enhanced model unloading capabilities and SeedVR2 support
+* **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Now supports SeedVR2 DiT and VAE model purging.
 * **Input**: Any data type (ANY) passthrough
 * **Options**:  
    * `purge_cache`: Run `gc.collect()`, flush CUDA caches, call `torch.cuda.ipc_collect()`  
@@ -41,12 +41,18 @@ This is a completely original implementation designed specifically for Distorch 
      * Marks all models as not currently used
      * Aggressively unloads models via `model_unload()`
      * Calls `soft_empty_cache()` if available
+   * `purge_seedvr2_models`: Clear SeedVR2 DiT and VAE models from cache (new)
+     * Clears all cached DiT models from SeedVR2's GlobalModelCache
+     * Clears all cached VAE models from SeedVR2's GlobalModelCache
+     * Clears runner templates
+     * Properly releases model memory using SeedVR2's release_model_memory()
 * **Enhancements in v1.2.0**:
   * More aggressive model unloading with proper error handling
   * None checks and callable() checks for all method calls
   * Improved error messages and logging
   * Safe handling of models with None real_model references
-* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management.
+  * SeedVR2 model support for clearing DiT and VAE models
+* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system.
 
 #### Memory Cleaner
 
@@ -259,7 +265,7 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## Release History
 
-* **v1.2.0** – Added Model Patch Memory Cleaner node for ModelPatchLoader model patches (patch model format). Prevents OOM during upscaling after ModelPatchLoader usage. Handles exceptional patch model format different from standard ControlNet models. Enhanced DisTorchPurgeVRAMV2 with more aggressive model unloading, improved error handling, and safe None checks. Improved error handling in cleanup_models() and is_dead() methods in ComfyUI core.
+* **v1.2.0** – Added Model Patch Memory Cleaner node for ModelPatchLoader model patches (patch model format). Prevents OOM during upscaling after ModelPatchLoader usage. Handles exceptional patch model format different from standard ControlNet models. Enhanced DisTorchPurgeVRAMV2 with more aggressive model unloading, improved error handling, and safe None checks. Added SeedVR2 support to purge DiT and VAE models from cache. Fixed CPU device error in virtual memory reset. Improved error handling in cleanup_models() and is_dead() methods in ComfyUI core.
 * v1.10.1 – Hotfix ensuring DisTorch Purge VRAM V2 node ships inside the package.
 * v1.10 – Added the LayerUtility: Purge VRAM V2 compatibility node within DisTorch Memory Manager.
 * v1.1.0 – Added ANY type I/O support, simplified node names, moved category to "Memory".

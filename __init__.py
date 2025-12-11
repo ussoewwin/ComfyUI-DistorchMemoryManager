@@ -53,8 +53,12 @@ class MemoryCleaner:
         try:
             import comfy.model_management
             if hasattr(comfy.model_management, 'free_memory'):
-                comfy.model_management.free_memory(0, 'cuda:0')
-                comfy.model_management.free_memory(0, 'cpu')
+                # Only free CUDA memory, skip CPU as it may cause errors
+                if torch.cuda.is_available():
+                    try:
+                        comfy.model_management.free_memory(0, 'cuda:0')
+                    except Exception:
+                        pass
         except:
             pass
         
@@ -101,8 +105,12 @@ class MemoryManager:
                 try:
                     import comfy.model_management
                     if hasattr(comfy.model_management, 'free_memory'):
-                        comfy.model_management.free_memory(0, 'cuda:0')
-                        comfy.model_management.free_memory(0, 'cpu')
+                        # Only free CUDA memory, skip CPU as it may cause errors
+                        if torch.cuda.is_available():
+                            try:
+                                comfy.model_management.free_memory(0, 'cuda:0')
+                            except Exception as e:
+                                print(f"Virtual memory reset (CUDA) failed: {e}")
                         print("Virtual memory reset")
                 except Exception as e:
                     print(f"Virtual memory reset failed: {e}")
@@ -155,8 +163,12 @@ class SafeMemoryManager:
                 try:
                     import comfy.model_management
                     if hasattr(comfy.model_management, 'free_memory'):
-                        comfy.model_management.free_memory(0, 'cuda:0')
-                        comfy.model_management.free_memory(0, 'cpu')
+                        # Only free CUDA memory, skip CPU as it may cause errors
+                        if torch.cuda.is_available():
+                            try:
+                                comfy.model_management.free_memory(0, 'cuda:0')
+                            except Exception as e:
+                                print(f"Safe virtual memory reset (CUDA) failed: {e}")
                         print("Safe virtual memory reset")
                 except Exception as e:
                     print(f"Safe virtual memory reset failed: {e}")
@@ -182,6 +194,7 @@ class DisTorchPurgeVRAMV2:
                 "anything": (any, {}),
                 "purge_cache": ("BOOLEAN", {"default": True}),
                 "purge_models": ("BOOLEAN", {"default": True}),
+                "purge_seedvr2_models": ("BOOLEAN", {"default": False, "tooltip": "Clear SeedVR2 DiT (base) and VAE models from cache"}),
             }
         }
 
@@ -190,7 +203,7 @@ class DisTorchPurgeVRAMV2:
     FUNCTION = "purge_vram"
     CATEGORY = "DisTorch/Memory"
 
-    def purge_vram(self, anything, purge_cache, purge_models):
+    def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models):
         if purge_cache:
             gc.collect()
 
@@ -211,7 +224,44 @@ class DisTorchPurgeVRAMV2:
             try:
                 import comfy.model_management
 
-                # Cleanup dead models first
+                # Pre-cleanup: Remove models with None or non-callable real_model before calling cleanup_models()
+                # This prevents 'NoneType' object is not callable errors
+                if hasattr(comfy.model_management, "current_loaded_models"):
+                    current_loaded_models = comfy.model_management.current_loaded_models
+                    pre_cleaned = 0
+                    for i in range(len(current_loaded_models) - 1, -1, -1):
+                        loaded_model = current_loaded_models[i]
+                        if loaded_model is not None:
+                            try:
+                                # Check if real_model is None or not callable
+                                if hasattr(loaded_model, "real_model"):
+                                    real_model = loaded_model.real_model
+                                    if real_model is None:
+                                        # Remove model with None real_model
+                                        current_loaded_models.pop(i)
+                                        pre_cleaned += 1
+                                    elif not callable(real_model):
+                                        # Remove model with non-callable real_model
+                                        current_loaded_models.pop(i)
+                                        pre_cleaned += 1
+                                    else:
+                                        # Check if calling real_model() would fail
+                                        try:
+                                            if real_model() is None:
+                                                current_loaded_models.pop(i)
+                                                pre_cleaned += 1
+                                        except (TypeError, AttributeError):
+                                            # real_model is not callable or has issues
+                                            current_loaded_models.pop(i)
+                                            pre_cleaned += 1
+                            except Exception:
+                                # Skip problematic models
+                                pass
+                    
+                    if pre_cleaned > 0:
+                        print(f"Pre-cleaned {pre_cleaned} problematic model(s) before cleanup_models()")
+
+                # Cleanup dead models
                 if hasattr(comfy.model_management, "cleanup_models") and callable(comfy.model_management.cleanup_models):
                     try:
                         comfy.model_management.cleanup_models()
@@ -259,6 +309,33 @@ class DisTorchPurgeVRAMV2:
                     if unloaded_count > 0:
                         print(f"Unloaded {unloaded_count} model(s)")
                     
+                    # Pre-cleanup again before second cleanup_models() call
+                    if hasattr(comfy.model_management, "current_loaded_models"):
+                        current_loaded_models = comfy.model_management.current_loaded_models
+                        pre_cleaned_2 = 0
+                        for i in range(len(current_loaded_models) - 1, -1, -1):
+                            loaded_model = current_loaded_models[i]
+                            if loaded_model is not None:
+                                try:
+                                    if hasattr(loaded_model, "real_model"):
+                                        real_model = loaded_model.real_model
+                                        if real_model is None or not callable(real_model):
+                                            current_loaded_models.pop(i)
+                                            pre_cleaned_2 += 1
+                                        else:
+                                            try:
+                                                if real_model() is None:
+                                                    current_loaded_models.pop(i)
+                                                    pre_cleaned_2 += 1
+                                            except (TypeError, AttributeError):
+                                                current_loaded_models.pop(i)
+                                                pre_cleaned_2 += 1
+                                except Exception:
+                                    pass
+                        
+                        if pre_cleaned_2 > 0:
+                            print(f"Pre-cleaned {pre_cleaned_2} problematic model(s) before second cleanup_models()")
+                    
                     # Cleanup again after unloading
                     if hasattr(comfy.model_management, "cleanup_models"):
                         try:
@@ -275,6 +352,137 @@ class DisTorchPurgeVRAMV2:
                     
             except Exception as e:
                 print(f"Error purging models: {e}")
+
+        # Purge SeedVR2 models if requested
+        if purge_seedvr2_models:
+            try:
+                # Try to import SeedVR2's GlobalModelCache
+                import sys
+                import os
+                
+                # Try multiple possible paths for SeedVR2 custom node
+                # Note: Paths are relative to avoid hardcoding user-specific directories
+                seedvr2_path = None
+                
+                # Method 1: Try to import from already loaded modules (most reliable)
+                try:
+                    import seedvr2_videoupscaler
+                    if hasattr(seedvr2_videoupscaler, '__file__'):
+                        seedvr2_path = os.path.dirname(os.path.abspath(seedvr2_videoupscaler.__file__))
+                except (ImportError, AttributeError):
+                    pass
+                
+                # Method 2: Relative to current file (same custom_nodes directory)
+                # Current file is in: ComfyUI/custom_nodes/ComfyUI-DistorchMemoryManager/__init__.py
+                # Target is: ComfyUI/custom_nodes/seedvr2_videoupscaler
+                if not seedvr2_path:
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    # Go up one level to custom_nodes directory
+                    custom_nodes_dir = os.path.dirname(current_dir)
+                    seedvr2_candidate = os.path.join(custom_nodes_dir, 'seedvr2_videoupscaler')
+                    if os.path.exists(seedvr2_candidate) and os.path.isdir(seedvr2_candidate):
+                        seedvr2_path = seedvr2_candidate
+                
+                # Method 3: Search in sys.path for seedvr2_videoupscaler
+                if not seedvr2_path:
+                    for path in sys.path:
+                        # Check if path contains seedvr2_videoupscaler
+                        if 'seedvr2_videoupscaler' in path:
+                            # Extract the directory containing seedvr2_videoupscaler
+                            parts = path.split(os.sep)
+                            if 'seedvr2_videoupscaler' in parts:
+                                idx = parts.index('seedvr2_videoupscaler')
+                                candidate = os.sep.join(parts[:idx+1])
+                                if os.path.exists(candidate) and os.path.isdir(candidate):
+                                    seedvr2_path = candidate
+                                    break
+                        else:
+                            # Check if seedvr2_videoupscaler exists as subdirectory
+                            seedvr2_candidate = os.path.join(path, 'seedvr2_videoupscaler')
+                            if os.path.exists(seedvr2_candidate) and os.path.isdir(seedvr2_candidate):
+                                seedvr2_path = seedvr2_candidate
+                                break
+                
+                # Method 4: Find custom_nodes directory from current file path structure
+                if not seedvr2_path:
+                    current_file = os.path.abspath(__file__)
+                    parts = current_file.split(os.sep)
+                    # Look for 'custom_nodes' in the path
+                    if 'custom_nodes' in parts:
+                        idx = parts.index('custom_nodes')
+                        # Reconstruct path up to custom_nodes
+                        custom_nodes_base = os.sep.join(parts[:idx+1])
+                        seedvr2_candidate = os.path.join(custom_nodes_base, 'seedvr2_videoupscaler')
+                        if os.path.exists(seedvr2_candidate) and os.path.isdir(seedvr2_candidate):
+                            seedvr2_path = seedvr2_candidate
+                
+                if seedvr2_path:
+                    sys.path.insert(0, seedvr2_path)
+                    try:
+                        from src.core.model_cache import get_global_cache
+                        
+                        cache = get_global_cache()
+                        dit_cleared = 0
+                        vae_cleared = 0
+                        
+                        # Clear all DiT models
+                        if hasattr(cache, '_dit_models'):
+                            dit_models_copy = dict(cache._dit_models)
+                            for node_id, (model, config) in dit_models_copy.items():
+                                try:
+                                    # Ensure config has node_id for remove_dit
+                                    if not isinstance(config, dict):
+                                        config = {}
+                                    if 'node_id' not in config:
+                                        config['node_id'] = node_id
+                                    # Use remove_dit to properly clean up
+                                    if cache.remove_dit(config, debug=None):
+                                        dit_cleared += 1
+                                except Exception as e:
+                                    print(f"Error removing SeedVR2 DiT model {node_id}: {e}")
+                        
+                        # Clear all VAE models
+                        if hasattr(cache, '_vae_models'):
+                            vae_models_copy = dict(cache._vae_models)
+                            for node_id, (model, config) in vae_models_copy.items():
+                                try:
+                                    # Ensure config has node_id for remove_vae
+                                    if not isinstance(config, dict):
+                                        config = {}
+                                    if 'node_id' not in config:
+                                        config['node_id'] = node_id
+                                    # Use remove_vae to properly clean up
+                                    if cache.remove_vae(config, debug=None):
+                                        vae_cleared += 1
+                                except Exception as e:
+                                    print(f"Error removing SeedVR2 VAE model {node_id}: {e}")
+                        
+                        # Clear runner templates
+                        if hasattr(cache, '_runner_templates'):
+                            runner_count = len(cache._runner_templates)
+                            cache._runner_templates.clear()
+                            if runner_count > 0:
+                                print(f"Cleared {runner_count} SeedVR2 runner template(s)")
+                        
+                        if dit_cleared > 0 or vae_cleared > 0:
+                            print(f"Cleared {dit_cleared} SeedVR2 DiT model(s) and {vae_cleared} VAE model(s)")
+                        elif dit_cleared == 0 and vae_cleared == 0:
+                            print("No SeedVR2 models found in cache")
+                            
+                    except ImportError as e:
+                        print(f"SeedVR2 not available or incompatible version: {e}")
+                    except Exception as e:
+                        print(f"Error purging SeedVR2 models: {e}")
+                    finally:
+                        # Remove from path if we added it
+                        if seedvr2_path in sys.path:
+                            sys.path.remove(seedvr2_path)
+                else:
+                    # SeedVR2 not found - this is normal if SeedVR2 is not installed or not yet loaded
+                    # Don't print error as it's not necessarily a problem
+                    pass
+            except Exception as e:
+                print(f"Error accessing SeedVR2 models: {e}")
 
         return (anything,)
 
