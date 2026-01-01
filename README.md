@@ -1,6 +1,6 @@
 # ComfyUI-VRAM-Manager
 
-An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Other additional features include purging of SeedVR2 models, Qwen3-VL models, and Nunchaku models (FLUX/Z-Image/Qwen-Image), along with several other functions.
+**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, and Nunchaku models (FLUX/Z-Image/Qwen-Image). Includes Model Patch Memory Cleaner for ModelPatchLoader workflows.
 
 ## Overview
 
@@ -28,10 +28,10 @@ This is a completely original implementation designed specifically for Distorch 
   * Safely unloads model patches from VRAM
   * Performs cleanup_models_gc() to prevent memory leaks
 
-#### Purge VRAM V2 Compatibility (v1.10, Enhanced in v1.2.0, SeedVR2 Support Added)
+#### Purge VRAM V2 Compatibility (v1.10, Enhanced in v1.2.0, v2.0.0)
 
-* **Description**: Restored LayerStyle's **LayerUtility: Purge VRAM V2** inside the Distortch suite (original node) with enhanced model unloading capabilities and SeedVR2 support
-* **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Now supports SeedVR2 DiT and VAE model purging.
+* **Description**: Restored LayerStyle's **LayerUtility: Purge VRAM V2** inside the Distortch suite (original node) with enhanced model unloading capabilities, SeedVR2 support, and Qwen3-VL/Nunchaku model purging
+* **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Now supports SeedVR2 DiT and VAE model purging, Qwen3-VL models, and Nunchaku models (FLUX/Z-Image/Qwen-Image).
 * **Input**: Any data type (ANY) passthrough
 * **Options**:  
    * `purge_cache`: Run `gc.collect()`, flush CUDA caches, call `torch.cuda.ipc_collect()`  
@@ -46,11 +46,11 @@ This is a completely original implementation designed specifically for Distorch 
      * Clears all cached VAE models from SeedVR2's GlobalModelCache
      * Clears runner templates
      * Properly releases model memory using SeedVR2's release_model_memory()
-   * `purge_qwen3vl_models`: Clear Qwen3-VL models from GPU memory (v1.4.0)
+   * `purge_qwen3vl_models`: Clear Qwen3-VL models from GPU memory (v2.0.0)
      * Searches for Qwen3-VL models in sys.modules and gc.get_objects()
      * Handles device_map="auto" case for multi-device models
      * Clears model parameters, buffers, and internal state
-   * `purge_nunchaku_models`: Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory (v1.4.0)
+   * `purge_nunchaku_models`: Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory (v2.0.0)
      * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, and NunchakuQwenImageTransformer2DModel
      * Disables CPU offload before clearing models
      * Searches in sys.modules, ComfyUI current_loaded_models, and gc.get_objects()
@@ -60,12 +60,14 @@ This is a completely original implementation designed specifically for Distorch 
   * Improved error messages and logging
   * Safe handling of models with None real_model references
   * SeedVR2 model support for clearing DiT and VAE models
-* **Enhancements in v1.4.0**:
+* **Enhancements in v2.0.0**:
   * Qwen3-VL model purging with device_map="auto" support
   * Nunchaku model purging (FLUX/Z-Image/Qwen-Image) with CPU offload handling
   * Enhanced CUDA cache clearing for all devices
   * Comprehensive debug logging for model detection and purging
-* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system.
+  * Fixed any() function name collision with AnyType
+  * Changed display name to ComfyUI-VRAM-Manager
+* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management.
 
 #### Memory Cleaner
 
