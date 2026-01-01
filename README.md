@@ -1,4 +1,4 @@
-# ComfyUI-DistorchMemoryManager
+# ComfyUI-VRAM-Manager
 
 An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Other additional features include purging of SeedVR2 models, Qwen3-VL models, and Nunchaku models (FLUX/Z-Image/Qwen-Image), along with several other functions.
 
@@ -322,4 +322,4 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## About
 
-Independent memory management custom node for ComfyUI with Distorch support
+ComfyUI-VRAM-Manager (formerly ComfyUI-DistorchMemoryManager) - Independent memory management custom node for ComfyUI with Distorch support
