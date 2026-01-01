@@ -1,6 +1,6 @@
 # ComfyUI-DistorchMemoryManager
 
-An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling.Other additional features include purging of SeedVR2 models and several other functions.
+An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Other additional features include purging of SeedVR2 models, Qwen3-VL models, and Nunchaku models (FLUX/Z-Image/Qwen-Image), along with several other functions.
 
 ## Overview
 
@@ -229,6 +229,25 @@ or
 2. Keep `clean_cpu` disabled
 3. Enable only essential options
 
+### OOM with Qwen3-VL Models
+
+**Solution**:
+
+1. Use **DisTorchPurgeVRAMV2** node
+2. Enable `purge_qwen3vl_models: True` to clear Qwen3-VL models from GPU memory
+3. Enable `purge_cache: True` and `purge_models: True` for comprehensive cleanup
+4. The node handles device_map="auto" case for multi-device models automatically
+
+### OOM with Nunchaku Models (FLUX/Z-Image/Qwen-Image)
+
+**Solution**:
+
+1. Use **DisTorchPurgeVRAMV2** node
+2. Enable `purge_nunchaku_models: True` to clear Nunchaku models from GPU memory
+3. The node automatically disables CPU offload before clearing models
+4. Enable `purge_cache: True` and `purge_models: True` for comprehensive cleanup
+5. Works with NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, and NunchakuQwenImageTransformer2DModel
+
 ## Technical Details
 
 ### Implemented Features
@@ -243,6 +262,17 @@ or
   * Removes from `current_loaded_models` list
   * Performs `cleanup_models_gc()` to prevent memory leaks
   * Handles exceptional patch model format loaded via ModelPatchLoader (different from standard ControlNet)
+* Qwen3-VL model purging (v1.4.0)
+  * Searches for Qwen3-VL models in sys.modules and gc.get_objects()
+  * Handles device_map="auto" case for multi-device models
+  * Clears model parameters, buffers, and internal state
+  * Supports hf_device_map processing for distributed models
+* Nunchaku model purging (v1.4.0)
+  * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, and NunchakuQwenImageTransformer2DModel
+  * Automatically disables CPU offload before clearing models
+  * Searches in sys.modules, ComfyUI current_loaded_models, and gc.get_objects()
+  * Handles nested model structures (ModelPatcher, ComfyFluxWrapper)
+  * Clears offload_manager to release offloaded memory
 
 ### Safety Features
 
@@ -261,12 +291,15 @@ or
 3. **Safe design**: Considerations to prevent UI corruption
 4. **Flexibility**: Five different levels of nodes (v1.2.0)
 5. **Model patch support**: Dedicated handling for ModelPatchLoader model patches
+6. **Extended model support (v1.4.0)**: Qwen3-VL and Nunchaku model purging with comprehensive detection and cleanup
 
 ## Additional Tips
 
 * Expanding paging file size can also reduce OOM occurrences during upscaling
 * Note: For OOM during video generation inference (where VRAM is critical), paging file expansion won't help
 * For ModelPatchLoader workflows: Always use Model Patch Memory Cleaner before upscaling to prevent OOM. Note that patch model format loaded via ModelPatchLoader is an exceptional format different from standard ControlNet models.
+* For Qwen3-VL workflows: Use DisTorchPurgeVRAMV2 with `purge_qwen3vl_models: True` after Qwen3-VL model usage to prevent OOM. The node automatically handles device_map="auto" case for models distributed across multiple devices.
+* For Nunchaku workflows (FLUX/Z-Image/Qwen-Image): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()).
 
 ## License
 
