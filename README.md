@@ -164,33 +164,6 @@ or
 * Use **Memory Manager**
 * `clean_cpu: True` (Warning: possible UI corruption)
 
-## Comparison with Purge VRAM
-
-### Distorch Memory Manager Advantages
-
-1. **Distorch-specific functionality**:  
-   * `comfy.model_management.free_memory(0, 'cuda:0')` - Direct virtual memory release  
-   * `comfy.model_management.free_memory(0, 'cpu')` - CPU virtual memory release
-2. **More detailed memory management**:  
-   * `torch.cuda.synchronize()` - Complete GPU synchronization  
-   * Memory usage measurement before/after  
-   * Detailed logging for effect verification
-3. **Safe design**:  
-   * Safe memory clearing to prevent UI corruption  
-   * Error protection with exception handling
-4. **Model patch support (v1.2.0)**:  
-   * Dedicated node for ModelPatchLoader model patches (patch model format)
-   * Prevents OOM during upscaling after ModelPatchLoader usage
-   * Handles exceptional patch model format different from standard ControlNet models
-
-### Purge VRAM Advantages
-
-1. **Model unloading functionality**:  
-   * `comfy.model_management.unload_all_models()` - Force unload all models  
-   * `comfy.model_management.soft_empty_cache()` - Soft cache clearing
-
-**Recommendation**: Use Distorch Memory Manager together with Purge VRAM when model unloading is needed.
-
 ## Troubleshooting
 
 ### Out of Memory Errors
