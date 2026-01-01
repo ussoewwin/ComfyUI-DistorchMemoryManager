@@ -25,47 +25,6 @@ def clear_memory():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 
-class MemoryCleaner:
-    """
-    Basic memory cleaning node that provides safe default behavior.
-    """
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": {
-            "anything": (any, {}),
-        }}
-    
-    RETURN_TYPES = (any,)
-    RETURN_NAMES = ("any",)
-    FUNCTION = "clean_memory"
-    CATEGORY = "Memory"
-
-    def clean_memory(self, anything):
-        # Clear GPU memory
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-        
-        # Run garbage collection on the host
-        gc.collect()
-        
-        # Release virtual memory tracked by DisTorch/Comfy
-        try:
-            import comfy.model_management
-            if hasattr(comfy.model_management, 'free_memory'):
-                # Only free CUDA memory, skip CPU as it may cause errors
-                if torch.cuda.is_available():
-                    try:
-                        comfy.model_management.free_memory(0, 'cuda:0')
-                    except Exception:
-                        pass
-        except:
-            pass
-        
-        print("DisTorch memory cleaned")
-        return (anything,)
-
-
 class MemoryManager:
     """
     Advanced memory management node with fine-grained controls.
@@ -1614,7 +1573,6 @@ class ModelPatchMemoryCleaner:
 
 # Register nodes with ComfyUI
 NODE_CLASS_MAPPINGS = {
-    "MemoryCleaner": MemoryCleaner,
     "MemoryManager": MemoryManager,
     "SafeMemoryManager": SafeMemoryManager,
     "DisTorchPurgeVRAMV2": DisTorchPurgeVRAMV2,
@@ -1622,7 +1580,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MemoryCleaner": "Memory Cleaner",
     "MemoryManager": "Memory Manager",
     "SafeMemoryManager": "Safe Memory Manager",
     "DisTorchPurgeVRAMV2": "LayerUtility: Purge VRAM V2",

@@ -10,7 +10,7 @@ This is a completely original implementation designed specifically for Distorch 
 
 ## Features
 
-### Five Node Types
+### Four Node Types
 
 #### Model Patch Memory Cleaner (New in v1.2.0)
 
@@ -68,17 +68,6 @@ This is a completely original implementation designed specifically for Distorch 
   * Fixed any() function name collision with AnyType
   * Changed display name to ComfyUI-VRAM-Manager
 * **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management.
-
-#### Memory Cleaner
-
-* **Description**: Basic memory cleaning node
-* **Features**: Simple and safe memory management
-* **Input**: Any data type (ANY)
-* **Output**: Any data type (ANY)
-* **Functions**:  
-   * GPU cache clearing  
-   * Python garbage collection  
-   * Distorch virtual memory release
 
 #### Safe Memory Manager (Recommended)
 
@@ -143,13 +132,13 @@ pip install -r requirements.txt
 **For general memory management**:
 
 ```
-[Previous Node] → [Memory Cleaner] → [Next Node]
+[Previous Node] → [Safe Memory Manager] → [Next Node]
 ```
 
 or
 
 ```
-[Previous Node] → [Safe Memory Manager] → [Next Node]
+[Previous Node] → [Memory Manager] → [Next Node]
 ```
 
 ### Recommended Settings
@@ -209,7 +198,7 @@ or
 **Solution**:
 
 1. For ModelPatchLoader workflows: Use **Model Patch Memory Cleaner** after ControlNet usage
-2. For general workflows: Use **Safe Memory Manager**
+2. For general workflows: Use **Safe Memory Manager** or **Memory Manager**
 3. Enable `clean_gpu` and `reset_virtual_memory`
 4. Enable `force_gc` if needed
 
@@ -227,8 +216,8 @@ or
 
 **Solution**:
 
-1. Use **Safe Memory Manager** or **Model Patch Memory Cleaner**
-2. Keep `clean_cpu` disabled
+1. Use **Safe Memory Manager** (recommended) or **Model Patch Memory Cleaner**
+2. Keep `clean_cpu` disabled (if using Memory Manager)
 3. Enable only essential options
 
 ### OOM with Qwen3-VL Models
@@ -291,7 +280,7 @@ or
 1. **Distorch-specific functions**: Direct virtual memory release with `free_memory()`
 2. **More detailed management**: Memory usage measurement, detailed logging
 3. **Safe design**: Considerations to prevent UI corruption
-4. **Flexibility**: Five different levels of nodes (v1.2.0)
+4. **Flexibility**: Four different levels of nodes (v2.0.0)
 5. **Model patch support**: Dedicated handling for ModelPatchLoader model patches
 6. **Extended model support (v1.4.0)**: Qwen3-VL and Nunchaku model purging with comprehensive detection and cleanup
 
