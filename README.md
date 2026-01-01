@@ -246,17 +246,6 @@ or
 * None checks and callable() checks for all method calls (v1.2.0)
 * Robust error handling in cleanup_models() and is_dead() methods
 
-### Performance Characteristics
-
-**Distorch Memory Manager is superior** in performance due to:
-
-1. **Distorch-specific functions**: Direct virtual memory release with `free_memory()`
-2. **More detailed management**: Memory usage measurement, detailed logging
-3. **Safe design**: Considerations to prevent UI corruption
-4. **Flexibility**: Four different levels of nodes (v2.0.0)
-5. **Model patch support**: Dedicated handling for ModelPatchLoader model patches
-6. **Extended model support (v1.4.0)**: Qwen3-VL and Nunchaku model purging with comprehensive detection and cleanup
-
 ## Additional Tips
 
 * Expanding paging file size can also reduce OOM occurrences during upscaling
