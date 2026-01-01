@@ -41,17 +41,30 @@ This is a completely original implementation designed specifically for Distorch 
      * Marks all models as not currently used
      * Aggressively unloads models via `model_unload()`
      * Calls `soft_empty_cache()` if available
-   * `purge_seedvr2_models`: Clear SeedVR2 DiT and VAE models from cache (new)
+   * `purge_seedvr2_models`: Clear SeedVR2 DiT and VAE models from cache
      * Clears all cached DiT models from SeedVR2's GlobalModelCache
      * Clears all cached VAE models from SeedVR2's GlobalModelCache
      * Clears runner templates
      * Properly releases model memory using SeedVR2's release_model_memory()
+   * `purge_qwen3vl_models`: Clear Qwen3-VL models from GPU memory (v1.4.0)
+     * Searches for Qwen3-VL models in sys.modules and gc.get_objects()
+     * Handles device_map="auto" case for multi-device models
+     * Clears model parameters, buffers, and internal state
+   * `purge_nunchaku_models`: Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory (v1.4.0)
+     * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, and NunchakuQwenImageTransformer2DModel
+     * Disables CPU offload before clearing models
+     * Searches in sys.modules, ComfyUI current_loaded_models, and gc.get_objects()
 * **Enhancements in v1.2.0**:
   * More aggressive model unloading with proper error handling
   * None checks and callable() checks for all method calls
   * Improved error messages and logging
   * Safe handling of models with None real_model references
   * SeedVR2 model support for clearing DiT and VAE models
+* **Enhancements in v1.4.0**:
+  * Qwen3-VL model purging with device_map="auto" support
+  * Nunchaku model purging (FLUX/Z-Image/Qwen-Image) with CPU offload handling
+  * Enhanced CUDA cache clearing for all devices
+  * Comprehensive debug logging for model detection and purging
 * **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system.
 
 #### Memory Cleaner
@@ -265,6 +278,7 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## Release History
 
+* **v1.4.0** – Added Qwen3-VL and Nunchaku model purging support to DisTorchPurgeVRAMV2 node. Qwen3-VL models can now be purged from GPU memory with device_map="auto" support. Nunchaku models (FLUX/Z-Image/Qwen-Image) can be purged with CPU offload handling. Enhanced CUDA cache clearing to support all devices. Fixed any() function name collision with AnyType. Added comprehensive debug logging. See [Release Notes v1.4.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.4.0) for details.
 * **v1.3.1** – Improved SeedVR2 cache detection and messaging. Removed duplicate messages. Clarified that cache_model=False (default) means models are never cached in GlobalModelCache. Added detailed debug information for cache state.
 * **v1.3.0** – Added SeedVR2 model purging support to DisTorchPurgeVRAMV2 node. Fixed 'NoneType' object is not callable errors in cleanup_models(). Fixed CPU device error in virtual memory reset. Improved path detection for SeedVR2 custom node to work across different user environments.
 * **v1.2.0** – Added Model Patch Memory Cleaner node for ModelPatchLoader model patches (patch model format). Prevents OOM during upscaling after ModelPatchLoader usage. Handles exceptional patch model format different from standard ControlNet models. Enhanced DisTorchPurgeVRAMV2 with more aggressive model unloading, improved error handling, and safe None checks. Added SeedVR2 support to purge DiT and VAE models from cache. Fixed CPU device error in virtual memory reset. Improved error handling in cleanup_models() and is_dead() methods in ComfyUI core.
