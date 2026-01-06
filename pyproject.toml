@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI-DistorchMemoryManager"
-version = "2.0.0"
+version = "2.0.1"
 description = "An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, and Nunchaku models (FLUX/Z-Image/Qwen-Image). Includes Model Patch Memory Cleaner for ModelPatchLoader workflows."
 authors = [{ name = "ussoewwin" }]
 license = { file = "LICENSE" }
@@ -12,5 +12,5 @@ Repository = "https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager"
 [tool.comfy]
 PublisherId = "ussoewwin"
 DisplayName = "ComfyUI-VRAM-Manager"
-Icon = "https://raw.githubusercontent.com/nunchaku-tech/nunchaku/96615bd93a1f0d2cf98039fddecfec43ce34cc96/assets/nunchaku.svg"
+Icon = "icon.png"
 
