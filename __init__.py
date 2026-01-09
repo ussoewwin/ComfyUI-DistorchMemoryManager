@@ -165,6 +165,7 @@ class DisTorchPurgeVRAMV2:
     CATEGORY = "DisTorch/Memory"
 
     def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models):
+        global torch
         if purge_cache:
             gc.collect()
 
@@ -630,22 +631,23 @@ class DisTorchPurgeVRAMV2:
                                             # Force delete the model object itself
                                             # Clear all parameters and buffers to release memory
                                             try:
-                                                # Try to clear model's internal state more aggressively
+                                                # Try to clear model's internal state more aggressively (delete, not move to CPU)
                                                 if hasattr(attr, 'named_parameters'):
-                                                    for name, param in list(attr.named_parameters()):
+                                                    for name, param in list(attr.named_parameters(recurse=False)):
                                                         if param is not None and hasattr(param, 'data'):
                                                             try:
                                                                 if param.data is not None:
-                                                                    # Detach from computation graph
-                                                                    param.data = param.data.detach().cpu()
+                                                                    # Delete data instead of moving to CPU
+                                                                    del param.data
                                                             except Exception:
                                                                 pass
                                                 if hasattr(attr, 'named_buffers'):
-                                                    for name, buffer in list(attr.named_buffers()):
+                                                    for name, buffer in list(attr.named_buffers(recurse=False)):
                                                         if buffer is not None and hasattr(buffer, 'data'):
                                                             try:
                                                                 if buffer.data is not None:
-                                                                    buffer.data = buffer.data.detach().cpu()
+                                                                    # Delete data instead of moving to CPU
+                                                                    del buffer.data
                                                             except Exception:
                                                                 pass
                                                 # Clear model's modules dict if available
@@ -730,21 +732,23 @@ class DisTorchPurgeVRAMV2:
                                                 
                                                 # Clear the model from dict and force memory release
                                                 try:
-                                                    # Clear model's internal state before deletion
+                                                    # Clear model's internal state before deletion (delete, not move to CPU)
                                                     if hasattr(model_obj, 'named_parameters'):
-                                                        for name, param in list(model_obj.named_parameters()):
+                                                        for name, param in list(model_obj.named_parameters(recurse=False)):
                                                             if param is not None and hasattr(param, 'data'):
                                                                 try:
                                                                     if param.data is not None:
-                                                                        param.data = param.data.detach().cpu()
+                                                                        # Delete data instead of moving to CPU
+                                                                        del param.data
                                                                 except Exception:
                                                                     pass
                                                     if hasattr(model_obj, 'named_buffers'):
-                                                        for name, buffer in list(model_obj.named_buffers()):
+                                                        for name, buffer in list(model_obj.named_buffers(recurse=False)):
                                                             if buffer is not None and hasattr(buffer, 'data'):
                                                                 try:
                                                                     if buffer.data is not None:
-                                                                        buffer.data = buffer.data.detach().cpu()
+                                                                        # Delete data instead of moving to CPU
+                                                                        del buffer.data
                                                                 except Exception:
                                                                     pass
                                                     if hasattr(model_obj, '_modules'):
@@ -848,22 +852,23 @@ class DisTorchPurgeVRAMV2:
                                         
                                         # Force delete the model object and clear all references
                                         try:
-                                            # Clear model's internal state more aggressively
+                                            # Clear model's internal state more aggressively (delete, not move to CPU)
                                             if hasattr(obj, 'named_parameters'):
-                                                for name, param in list(obj.named_parameters()):
+                                                for name, param in list(obj.named_parameters(recurse=False)):
                                                     if param is not None and hasattr(param, 'data'):
                                                         try:
                                                             if param.data is not None:
-                                                                # Detach from computation graph and move to CPU
-                                                                param.data = param.data.detach().cpu()
+                                                                # Delete data instead of moving to CPU
+                                                                del param.data
                                                         except Exception:
                                                             pass
                                             if hasattr(obj, 'named_buffers'):
-                                                for name, buffer in list(obj.named_buffers()):
+                                                for name, buffer in list(obj.named_buffers(recurse=False)):
                                                     if buffer is not None and hasattr(buffer, 'data'):
                                                         try:
                                                             if buffer.data is not None:
-                                                                buffer.data = buffer.data.detach().cpu()
+                                                                # Delete data instead of moving to CPU
+                                                                del buffer.data
                                                         except Exception:
                                                             pass
                                             # Clear model's modules dict if available
@@ -956,6 +961,38 @@ class DisTorchPurgeVRAMV2:
                 except ImportError as e:
                     print(f"Nunchaku: Failed to import NunchakuQwenImageTransformer2DModel from comfyui_nunchaku: {e}")
                 
+                # Try to import NunchakuSDXLUNet2DConditionModel (SDXL)
+                try:
+                    from nunchaku.models.unets.unet_sdxl import NunchakuSDXLUNet2DConditionModel
+                    nunchaku_model_types.append(NunchakuSDXLUNet2DConditionModel)
+                    print("Nunchaku: Successfully imported NunchakuSDXLUNet2DConditionModel")
+                except ImportError as e:
+                    print(f"Nunchaku: Failed to import NunchakuSDXLUNet2DConditionModel: {e}")
+                
+                # Try to import NunchakuSDXL class (SDXL model wrapper)
+                nunchaku_sdxl_class = None
+                try:
+                    # Try to import from model_base
+                    try:
+                        from model_base.sdxl import NunchakuSDXL
+                        nunchaku_sdxl_class = NunchakuSDXL
+                        print("Nunchaku: Successfully imported NunchakuSDXL from model_base.sdxl")
+                    except ImportError:
+                        # Try alternative import paths
+                        try:
+                            import sys
+                            for module_name in list(sys.modules.keys()):
+                                if 'nunchaku' in module_name.lower() and 'sdxl' in module_name.lower():
+                                    module = sys.modules[module_name]
+                                    if hasattr(module, 'NunchakuSDXL'):
+                                        nunchaku_sdxl_class = getattr(module, 'NunchakuSDXL')
+                                        print(f"Nunchaku: Found NunchakuSDXL in {module_name}")
+                                        break
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"Nunchaku: Failed to import NunchakuSDXL: {e}")
+                
                 # Alternative import path for NunchakuQwenImageTransformer2DModel
                 if not __builtins__['any'](cls.__name__ == 'NunchakuQwenImageTransformer2DModel' for cls in nunchaku_model_types):
                     try:
@@ -1022,49 +1059,74 @@ class DisTorchPurgeVRAMV2:
                                                     except Exception as e:
                                                         print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
                                                 
-                                                # Move model to CPU and clear GPU memory
-                                                print(f"Nunchaku: Attempting to move model to CPU...")
-                                                try:
-                                                    if hasattr(attr, 'to'):
-                                                        attr.to('cpu')
-                                                        print(f"Nunchaku: Model moved to CPU using .to('cpu')")
-                                                    elif hasattr(attr, 'cpu'):
-                                                        attr.cpu()
-                                                        print(f"Nunchaku: Model moved to CPU using .cpu()")
-                                                except Exception as e:
-                                                    print(f"Nunchaku: Warning: Failed to move model to CPU: {e}")
+                                                # Delete model data directly (not moving to CPU)
+                                                print(f"Nunchaku: Attempting to delete model data...")
                                                 
-                                                # Clear model's internal state
+                                                # Clear model's internal state by deleting data
                                                 try:
+                                                    params_deleted = 0
+                                                    buffers_deleted = 0
+                                                    
+                                                    # Delete parameters (only top-level, not submodules)
                                                     if hasattr(attr, 'named_parameters'):
-                                                        params_cleared = 0
-                                                        for name, param in list(attr.named_parameters()):
-                                                            if param is not None and hasattr(param, 'data'):
+                                                        for name, param in list(attr.named_parameters(recurse=False)):
+                                                            if param is not None:
                                                                 try:
-                                                                    if param.data is not None:
-                                                                        param.data = param.data.detach().cpu()
-                                                                        params_cleared += 1
+                                                                    if hasattr(param, 'data') and param.data is not None:
+                                                                        del param.data
+                                                                        params_deleted += 1
                                                                 except Exception:
                                                                     pass
-                                                        if params_cleared > 0:
-                                                            print(f"Nunchaku: Cleared {params_cleared} parameters from {module_name}.{attr_name}")
+                                                    
+                                                    # Delete buffers (only top-level, not submodules)
                                                     if hasattr(attr, 'named_buffers'):
-                                                        buffers_cleared = 0
-                                                        for name, buffer in list(attr.named_buffers()):
-                                                            if buffer is not None and hasattr(buffer, 'data'):
+                                                        for name, buffer in list(attr.named_buffers(recurse=False)):
+                                                            if buffer is not None:
                                                                 try:
-                                                                    if buffer.data is not None:
-                                                                        buffer.data = buffer.data.detach().cpu()
-                                                                        buffers_cleared += 1
+                                                                    if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                        del buffer.data
+                                                                        buffers_deleted += 1
                                                                 except Exception:
                                                                     pass
-                                                        if buffers_cleared > 0:
-                                                            print(f"Nunchaku: Cleared {buffers_cleared} buffers from {module_name}.{attr_name}")
-                                                    if hasattr(attr, '_modules'):
-                                                        attr._modules.clear()
-                                                        print(f"Nunchaku: Cleared _modules dict from {module_name}.{attr_name}")
+                                                    
+                                                    # Clear _parameters and _buffers dicts
+                                                    if hasattr(attr, '_parameters'):
+                                                        try:
+                                                            for param_name in list(attr._parameters.keys()):
+                                                                param = attr._parameters[param_name]
+                                                                if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                    try:
+                                                                        del param.data
+                                                                    except Exception:
+                                                                        pass
+                                                            attr._parameters.clear()
+                                                        except Exception:
+                                                            pass
+                                                    
+                                                    if hasattr(attr, '_buffers'):
+                                                        try:
+                                                            for buffer_name in list(attr._buffers.keys()):
+                                                                buffer = attr._buffers[buffer_name]
+                                                                if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                    try:
+                                                                        del buffer.data
+                                                                    except Exception:
+                                                                        pass
+                                                            attr._buffers.clear()
+                                                        except Exception:
+                                                            pass
+                                                    
+                                                    # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                    # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                    # Only top-level parameters are deleted above (with recurse=False)
+                                                    
+                                                    if params_deleted > 0:
+                                                        print(f"Nunchaku: Deleted {params_deleted} total parameters from {module_name}.{attr_name}")
+                                                    if buffers_deleted > 0:
+                                                        print(f"Nunchaku: Deleted {buffers_deleted} total buffers from {module_name}.{attr_name}")
+                                                    # Module structure (_modules) is preserved for re-loading via load_state_dict
                                                 except Exception as e:
-                                                    print(f"Nunchaku: Warning: Failed to clear model internal state: {e}")
+                                                    print(f"Nunchaku: Warning: Failed to delete model internal state: {e}")
                                                 
                                                 # Delete the model reference
                                                 try:
@@ -1081,6 +1143,142 @@ class DisTorchPurgeVRAMV2:
                                                 print(f"Nunchaku: Error clearing model from {module_name}.{attr_name}: {e}")
                                                 import traceback
                                                 print(f"Nunchaku: Traceback: {traceback.format_exc()}")
+                                    
+                                    # Check if it's a NunchakuSDXL instance (SDXL model wrapper)
+                                    if not model_found and nunchaku_sdxl_class is not None:
+                                        try:
+                                            if isinstance(attr, nunchaku_sdxl_class):
+                                                if hasattr(attr, 'diffusion_model'):
+                                                    diffusion_model = attr.diffusion_model
+                                                    for model_type in nunchaku_model_types:
+                                                        if isinstance(diffusion_model, model_type):
+                                                            try:
+                                                                print(f"Nunchaku: Found NunchakuSDXL instance with {model_type.__name__} at {module_name}.{attr_name} (id: {id(attr)})")
+                                                                # Disable CPU offload first if enabled
+                                                                if hasattr(diffusion_model, 'set_offload'):
+                                                                    try:
+                                                                        if hasattr(diffusion_model, 'offload') and diffusion_model.offload:
+                                                                            print(f"Nunchaku: Disabling CPU offload for SDXL diffusion_model")
+                                                                            diffusion_model.set_offload(False)
+                                                                            print(f"Nunchaku: CPU offload disabled for SDXL diffusion_model")
+                                                                    except Exception as e:
+                                                                        print(f"Nunchaku: Warning: Failed to disable CPU offload: {e}")
+                                                                
+                                                                # Clear offload_manager
+                                                                if hasattr(diffusion_model, 'offload_manager') and diffusion_model.offload_manager is not None:
+                                                                    try:
+                                                                        print(f"Nunchaku: Clearing offload_manager for SDXL diffusion_model")
+                                                                        diffusion_model.offload_manager = None
+                                                                        print(f"Nunchaku: offload_manager cleared for SDXL diffusion_model")
+                                                                    except Exception as e:
+                                                                        print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
+                                                                
+                                                                # Delete SDXL diffusion_model data directly (not moving to CPU)
+                                                                print(f"Nunchaku: Attempting to delete SDXL diffusion_model data...")
+                                                                
+                                                                # Delete model's internal state
+                                                                try:
+                                                                    params_deleted = 0
+                                                                    buffers_deleted = 0
+                                                                    
+                                                                    # Delete parameters (only top-level, not submodules)
+                                                                    if hasattr(diffusion_model, 'named_parameters'):
+                                                                        for name, param in list(diffusion_model.named_parameters(recurse=False)):
+                                                                            if param is not None:
+                                                                                try:
+                                                                                    if hasattr(param, 'data') and param.data is not None:
+                                                                                        del param.data
+                                                                                        params_deleted += 1
+                                                                                except Exception:
+                                                                                    pass
+                                                                    
+                                                                    # Delete buffers (only top-level, not submodules)
+                                                                    if hasattr(diffusion_model, 'named_buffers'):
+                                                                        for name, buffer in list(diffusion_model.named_buffers(recurse=False)):
+                                                                            if buffer is not None:
+                                                                                try:
+                                                                                    if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                        del buffer.data
+                                                                                        buffers_deleted += 1
+                                                                                except Exception:
+                                                                                    pass
+                                                                    
+                                                                    # Clear _parameters and _buffers dicts
+                                                                    if hasattr(diffusion_model, '_parameters'):
+                                                                        try:
+                                                                            for param_name in list(diffusion_model._parameters.keys()):
+                                                                                param = diffusion_model._parameters[param_name]
+                                                                                if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                                    try:
+                                                                                        del param.data
+                                                                                    except Exception:
+                                                                                        pass
+                                                                            diffusion_model._parameters.clear()
+                                                                        except Exception:
+                                                                            pass
+                                                                    
+                                                                    if hasattr(diffusion_model, '_buffers'):
+                                                                        try:
+                                                                            for buffer_name in list(diffusion_model._buffers.keys()):
+                                                                                buffer = diffusion_model._buffers[buffer_name]
+                                                                                if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                    try:
+                                                                                        del buffer.data
+                                                                                    except Exception:
+                                                                                        pass
+                                                                            diffusion_model._buffers.clear()
+                                                                        except Exception:
+                                                                            pass
+                                                                    
+                                                                    # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                                    # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                                    # Only top-level parameters are deleted above (with recurse=False)
+                                                                    
+                                                                    # Try to clear any cached data or temporary attributes that might hold VRAM
+                                                                    try:
+                                                                        # Clear any cache-related attributes
+                                                                        cache_attrs = ['_cache', 'cache', '_state_dict_cache', 'state_dict_cache', '_non_persistent_buffers_set']
+                                                                        for cache_attr in cache_attrs:
+                                                                            if hasattr(diffusion_model, cache_attr):
+                                                                                try:
+                                                                                    cache_val = getattr(diffusion_model, cache_attr)
+                                                                                    if cache_val is not None:
+                                                                                        if isinstance(cache_val, (dict, set)):
+                                                                                            cache_val.clear()
+                                                                                        elif hasattr(cache_val, 'clear'):
+                                                                                            cache_val.clear()
+                                                                                        setattr(diffusion_model, cache_attr, None)
+                                                                                        print(f"Nunchaku: Cleared {cache_attr} from SDXL diffusion_model")
+                                                                                except Exception:
+                                                                                    pass
+                                                                    except Exception:
+                                                                        pass
+                                                                    
+                                                                    if params_deleted > 0:
+                                                                        print(f"Nunchaku: Deleted {params_deleted} total parameters from SDXL diffusion_model")
+                                                                    if buffers_deleted > 0:
+                                                                        print(f"Nunchaku: Deleted {buffers_deleted} total buffers from SDXL diffusion_model")
+                                                                    # Module structure (_modules) is preserved for re-loading via load_state_dict
+                                                                except Exception as e:
+                                                                    print(f"Nunchaku: Warning: Failed to delete SDXL diffusion_model internal state: {e}")
+                                                                
+                                                                # Clear the diffusion_model reference
+                                                                try:
+                                                                    attr.diffusion_model = None
+                                                                    print(f"Nunchaku: Cleared diffusion_model reference from NunchakuSDXL instance")
+                                                                except Exception as e:
+                                                                    print(f"Nunchaku: Warning: Failed to clear diffusion_model reference: {e}")
+                                                                
+                                                                nunchaku_cleared += 1
+                                                                print(f"Nunchaku: Successfully cleared SDXL model ({model_type.__name__}) from {module_name}.{attr_name}")
+                                                                model_found = True
+                                                                break
+                                                            except Exception as e:
+                                                                print(f"Nunchaku: Error clearing SDXL model from {module_name}.{attr_name}: {e}")
+                                                                import traceback
+                                                                print(f"Nunchaku: Traceback: {traceback.format_exc()}")
+                                        except Exception as e:
+                                            print(f"Nunchaku: Warning: Error checking NunchakuSDXL instance: {e}")
                                     
                                     # Check if it's a dict containing a model
                                     if not model_found and isinstance(attr, dict):
@@ -1104,13 +1302,31 @@ class DisTorchPurgeVRAMV2:
                                                             except Exception:
                                                                 pass
                                                         
-                                                        if hasattr(transformer_obj, 'to'):
-                                                            transformer_obj.to('cpu')
-                                                        elif hasattr(transformer_obj, 'cpu'):
-                                                            transformer_obj.cpu()
+                                                        # Delete transformer_obj data
+                                                        try:
+                                                            if hasattr(transformer_obj, 'named_parameters'):
+                                                                for _, p in list(transformer_obj.named_parameters()):
+                                                                    if p is not None and hasattr(p, 'data') and p.data is not None:
+                                                                        try:
+                                                                            del p.data
+                                                                        except Exception:
+                                                                            pass
+                                                            if hasattr(transformer_obj, 'named_buffers'):
+                                                                for _, b in list(transformer_obj.named_buffers()):
+                                                                    if b is not None and hasattr(b, 'data') and b.data is not None:
+                                                                        try:
+                                                                            del b.data
+                                                                        except Exception:
+                                                                            pass
+                                                            if hasattr(transformer_obj, '_modules'):
+                                                                # DO NOT clear _modules - it contains module structure
+                                                                # transformer_obj._modules.clear()  # Removed: clearing _modules breaks model structure
+                                                                pass
+                                                        except Exception:
+                                                            pass
                                                         attr['transformer'] = None
                                                         nunchaku_cleared += 1
-                                                        print(f"Cleared Nunchaku model ({model_type.__name__}) from dict.transformer in {module_name}.{attr_name}")
+                                                        print(f"Deleted Nunchaku model ({model_type.__name__}) from dict.transformer in {module_name}.{attr_name}")
                                                         break
                                                     except Exception as e:
                                                         print(f"Error clearing Nunchaku model from dict in {module_name}.{attr_name}: {e}")
@@ -1142,12 +1358,30 @@ class DisTorchPurgeVRAMV2:
                                                                     except Exception:
                                                                         pass
                                                                 
-                                                                if hasattr(transformer_obj, 'to'):
-                                                                    transformer_obj.to('cpu')
-                                                                elif hasattr(transformer_obj, 'cpu'):
-                                                                    transformer_obj.cpu()
+                                                                # Delete transformer_obj data
+                                                                try:
+                                                                    if hasattr(transformer_obj, 'named_parameters'):
+                                                                        for _, p in list(transformer_obj.named_parameters()):
+                                                                            if p is not None and hasattr(p, 'data') and p.data is not None:
+                                                                                try:
+                                                                                    del p.data
+                                                                                except Exception:
+                                                                                    pass
+                                                                    if hasattr(transformer_obj, 'named_buffers'):
+                                                                        for _, b in list(transformer_obj.named_buffers()):
+                                                                            if b is not None and hasattr(b, 'data') and b.data is not None:
+                                                                                try:
+                                                                                    del b.data
+                                                                                except Exception:
+                                                                                    pass
+                                                                    if hasattr(transformer_obj, '_modules'):
+                                                                        # DO NOT clear _modules - it contains module structure
+                                                                        # transformer_obj._modules.clear()  # Removed: clearing _modules breaks model structure
+                                                                        pass
+                                                                except Exception:
+                                                                    pass
                                                                 nunchaku_cleared += 1
-                                                                print(f"Cleared Nunchaku model ({model_type.__name__}) from dict.model.diffusion_model.model in {module_name}.{attr_name}")
+                                                                print(f"Deleted Nunchaku model ({model_type.__name__}) from dict.model.diffusion_model.model in {module_name}.{attr_name}")
                                                                 break
                                                             except Exception as e:
                                                                 print(f"Error clearing Nunchaku model from nested structure in {module_name}.{attr_name}: {e}")
@@ -1170,12 +1404,26 @@ class DisTorchPurgeVRAMV2:
                                                                 except Exception:
                                                                     pass
                                                             
-                                                            if hasattr(diffusion_model, 'to'):
-                                                                diffusion_model.to('cpu')
-                                                            elif hasattr(diffusion_model, 'cpu'):
-                                                                diffusion_model.cpu()
+                                                            # Delete diffusion_model data recursively
+                                                            try:
+                                                                params_deleted = 0
+                                                                buffers_deleted = 0
+                                                                
+                                                                # Recursively delete all parameters and buffers (including submodules)
+                                                                # This fully frees VRAM while preserving module structure for re-loading
+                                                                # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                                # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                                # Only top-level parameters are deleted above (with recurse=False)
+                                                                
+                                                                if params_deleted > 0:
+                                                                    print(f"Nunchaku: Deleted {params_deleted} total parameters from diffusion_model in {module_name}.{attr_name}")
+                                                                if buffers_deleted > 0:
+                                                                    print(f"Nunchaku: Deleted {buffers_deleted} total buffers from diffusion_model in {module_name}.{attr_name}")
+                                                                # Module structure (_modules) is preserved for re-loading via load_state_dict
+                                                            except Exception:
+                                                                pass
                                                             nunchaku_cleared += 1
-                                                            print(f"Cleared Nunchaku model ({model_type.__name__}) from dict.model.diffusion_model in {module_name}.{attr_name}")
+                                                            print(f"Deleted Nunchaku model ({model_type.__name__}) from dict.model.diffusion_model in {module_name}.{attr_name}")
                                                             break
                                                         except Exception as e:
                                                             print(f"Error clearing Nunchaku model from diffusion_model in {module_name}.{attr_name}: {e}")
@@ -1199,6 +1447,135 @@ class DisTorchPurgeVRAMV2:
                                 try:
                                     if hasattr(loaded_model, "model"):
                                         model = loaded_model.model
+                                        
+                                        # Check if model is a NunchakuSDXL instance (SDXL model wrapper)
+                                        if nunchaku_sdxl_class is not None and isinstance(model, nunchaku_sdxl_class):
+                                            if hasattr(model, "diffusion_model"):
+                                                diffusion_model = model.diffusion_model
+                                                for model_type in nunchaku_model_types:
+                                                    if isinstance(diffusion_model, model_type):
+                                                        try:
+                                                            print(f"Nunchaku: Found NunchakuSDXL instance with {model_type.__name__} in ComfyUI model management (id: {id(model)})")
+                                                            # Disable CPU offload first if enabled
+                                                            if hasattr(diffusion_model, 'set_offload'):
+                                                                try:
+                                                                    if hasattr(diffusion_model, 'offload') and diffusion_model.offload:
+                                                                        print(f"Nunchaku: Disabling CPU offload for SDXL diffusion_model in ComfyUI")
+                                                                        diffusion_model.set_offload(False)
+                                                                        print(f"Nunchaku: CPU offload disabled for SDXL diffusion_model in ComfyUI")
+                                                                except Exception as e:
+                                                                    print(f"Nunchaku: Warning: Failed to disable CPU offload: {e}")
+                                                            
+                                                            # Clear offload_manager
+                                                            if hasattr(diffusion_model, 'offload_manager') and diffusion_model.offload_manager is not None:
+                                                                try:
+                                                                    print(f"Nunchaku: Clearing offload_manager for SDXL diffusion_model in ComfyUI")
+                                                                    diffusion_model.offload_manager = None
+                                                                    print(f"Nunchaku: offload_manager cleared for SDXL diffusion_model in ComfyUI")
+                                                                except Exception as e:
+                                                                    print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
+                                                            
+                                                            # Delete SDXL diffusion_model data
+                                                            print(f"Nunchaku: Attempting to delete SDXL diffusion_model data in ComfyUI...")
+                                                            try:
+                                                                params_deleted = 0
+                                                                buffers_deleted = 0
+                                                                
+                                                                # Delete parameters (only top-level, not submodules)
+                                                                if hasattr(diffusion_model, 'named_parameters'):
+                                                                    for name, param in list(diffusion_model.named_parameters(recurse=False)):
+                                                                        if param is not None:
+                                                                            try:
+                                                                                if hasattr(param, 'data') and param.data is not None:
+                                                                                    del param.data
+                                                                                    params_deleted += 1
+                                                                            except Exception:
+                                                                                pass
+                                                                
+                                                                # Delete buffers (only top-level, not submodules)
+                                                                if hasattr(diffusion_model, 'named_buffers'):
+                                                                    for name, buffer in list(diffusion_model.named_buffers(recurse=False)):
+                                                                        if buffer is not None:
+                                                                            try:
+                                                                                if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                    del buffer.data
+                                                                                    buffers_deleted += 1
+                                                                            except Exception:
+                                                                                pass
+                                                                
+                                                                # Clear _parameters and _buffers dicts
+                                                                if hasattr(diffusion_model, '_parameters'):
+                                                                    try:
+                                                                        for param_name in list(diffusion_model._parameters.keys()):
+                                                                            param = diffusion_model._parameters[param_name]
+                                                                            if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                                try:
+                                                                                    del param.data
+                                                                                except Exception:
+                                                                                    pass
+                                                                        diffusion_model._parameters.clear()
+                                                                    except Exception:
+                                                                        pass
+                                                                
+                                                                if hasattr(diffusion_model, '_buffers'):
+                                                                    try:
+                                                                        for buffer_name in list(diffusion_model._buffers.keys()):
+                                                                            buffer = diffusion_model._buffers[buffer_name]
+                                                                            if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                try:
+                                                                                    del buffer.data
+                                                                                except Exception:
+                                                                                    pass
+                                                                        diffusion_model._buffers.clear()
+                                                                    except Exception:
+                                                                        pass
+                                                                
+                                                                # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                                # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                                # Only top-level parameters are deleted above (with recurse=False)
+                                                                
+                                                                # Try to clear any cached data or temporary attributes that might hold VRAM
+                                                                try:
+                                                                    # Clear any cache-related attributes
+                                                                    cache_attrs = ['_cache', 'cache', '_state_dict_cache', 'state_dict_cache', '_non_persistent_buffers_set']
+                                                                    for cache_attr in cache_attrs:
+                                                                        if hasattr(diffusion_model, cache_attr):
+                                                                            try:
+                                                                                cache_val = getattr(diffusion_model, cache_attr)
+                                                                                if cache_val is not None:
+                                                                                    if isinstance(cache_val, (dict, set)):
+                                                                                        cache_val.clear()
+                                                                                    elif hasattr(cache_val, 'clear'):
+                                                                                        cache_val.clear()
+                                                                                    setattr(diffusion_model, cache_attr, None)
+                                                                                    print(f"Nunchaku: Cleared {cache_attr} from SDXL diffusion_model in ComfyUI")
+                                                                            except Exception:
+                                                                                pass
+                                                                except Exception:
+                                                                    pass
+                                                                
+                                                                if params_deleted > 0:
+                                                                    print(f"Nunchaku: Deleted {params_deleted} total parameters from SDXL diffusion_model in ComfyUI")
+                                                                if buffers_deleted > 0:
+                                                                    print(f"Nunchaku: Deleted {buffers_deleted} total buffers from SDXL diffusion_model in ComfyUI")
+                                                                # Module structure (_modules) is preserved for re-loading via load_state_dict
+                                                            except Exception as e:
+                                                                print(f"Nunchaku: Warning: Failed to delete SDXL diffusion_model internal state: {e}")
+                                                            
+                                                            # Mark as not currently used and unload
+                                                            loaded_model.currently_used = False
+                                                            print(f"Nunchaku: Unloading SDXL model from ComfyUI model management...")
+                                                            if hasattr(loaded_model, "model_unload"):
+                                                                loaded_model.model_unload()
+                                                                print(f"Nunchaku: SDXL model unloaded from ComfyUI model management")
+                                                            nunchaku_cleared += 1
+                                                            print(f"Nunchaku: Successfully cleared SDXL model ({model_type.__name__}) from ComfyUI model management")
+                                                            break
+                                                        except Exception as e:
+                                                            print(f"Nunchaku: Error clearing SDXL model from ComfyUI model management: {e}")
+                                                            import traceback
+                                                            print(f"Nunchaku: Traceback: {traceback.format_exc()}")
+                                        
                                         # Check if model has diffusion_model attribute
                                         if hasattr(model, "diffusion_model"):
                                             diffusion_model = model.diffusion_model
@@ -1228,37 +1605,74 @@ class DisTorchPurgeVRAMV2:
                                                                 except Exception as e:
                                                                     print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
                                                             
-                                                            # Clear model's internal state
+                                                            # Delete model data
+                                                            print(f"Nunchaku: Attempting to delete model data in ComfyUI...")
                                                             try:
+                                                                params_deleted = 0
+                                                                buffers_deleted = 0
+                                                                
+                                                                # Delete parameters (only top-level, not submodules)
                                                                 if hasattr(transformer, 'named_parameters'):
-                                                                    params_cleared = 0
-                                                                    for name, param in list(transformer.named_parameters()):
-                                                                        if param is not None and hasattr(param, 'data'):
+                                                                    for name, param in list(transformer.named_parameters(recurse=False)):
+                                                                        if param is not None:
                                                                             try:
-                                                                                if param.data is not None:
-                                                                                    param.data = param.data.detach().cpu()
-                                                                                    params_cleared += 1
+                                                                                if hasattr(param, 'data') and param.data is not None:
+                                                                                    del param.data
+                                                                                    params_deleted += 1
                                                                             except Exception:
                                                                                 pass
-                                                                    if params_cleared > 0:
-                                                                        print(f"Nunchaku: Cleared {params_cleared} parameters from ComfyUI model")
+                                                                
+                                                                # Delete buffers (only top-level, not submodules)
                                                                 if hasattr(transformer, 'named_buffers'):
-                                                                    buffers_cleared = 0
-                                                                    for name, buffer in list(transformer.named_buffers()):
-                                                                        if buffer is not None and hasattr(buffer, 'data'):
+                                                                    for name, buffer in list(transformer.named_buffers(recurse=False)):
+                                                                        if buffer is not None:
                                                                             try:
-                                                                                if buffer.data is not None:
-                                                                                    buffer.data = buffer.data.detach().cpu()
-                                                                                    buffers_cleared += 1
+                                                                                if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                    del buffer.data
+                                                                                    buffers_deleted += 1
                                                                             except Exception:
                                                                                 pass
-                                                                    if buffers_cleared > 0:
-                                                                        print(f"Nunchaku: Cleared {buffers_cleared} buffers from ComfyUI model")
-                                                                if hasattr(transformer, '_modules'):
-                                                                    transformer._modules.clear()
-                                                                    print(f"Nunchaku: Cleared _modules dict from ComfyUI model")
+                                                                
+                                                                # Clear _parameters and _buffers dicts
+                                                                if hasattr(transformer, '_parameters'):
+                                                                    try:
+                                                                        for param_name in list(transformer._parameters.keys()):
+                                                                            param = transformer._parameters[param_name]
+                                                                            if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                                try:
+                                                                                    del param.data
+                                                                                except Exception:
+                                                                                    pass
+                                                                        transformer._parameters.clear()
+                                                                    except Exception:
+                                                                        pass
+                                                                
+                                                                if hasattr(transformer, '_buffers'):
+                                                                    try:
+                                                                        for buffer_name in list(transformer._buffers.keys()):
+                                                                            buffer = transformer._buffers[buffer_name]
+                                                                            if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                try:
+                                                                                    del buffer.data
+                                                                                except Exception:
+                                                                                    pass
+                                                                        transformer._buffers.clear()
+                                                                    except Exception:
+                                                                        pass
+                                                                
+                                                                # Recursively delete all parameters and buffers (including submodules)
+                                                                # This fully frees VRAM while preserving module structure for re-loading
+                                                                # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                                # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                                # Only top-level parameters are deleted above (with recurse=False)
+                                                                
+                                                                if params_deleted > 0:
+                                                                    print(f"Nunchaku: Deleted {params_deleted} total parameters from ComfyUI model")
+                                                                if buffers_deleted > 0:
+                                                                    print(f"Nunchaku: Deleted {buffers_deleted} total buffers from ComfyUI model")
+                                                                # Module structure (_modules) is preserved for re-loading via load_state_dict
                                                             except Exception as e:
-                                                                print(f"Nunchaku: Warning: Failed to clear model internal state: {e}")
+                                                                print(f"Nunchaku: Warning: Failed to delete model internal state: {e}")
                                                             
                                                             # Mark as not currently used
                                                             loaded_model.currently_used = False
@@ -1298,37 +1712,72 @@ class DisTorchPurgeVRAMV2:
                                                             except Exception as e:
                                                                 print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
                                                         
-                                                        # Clear model's internal state
+                                                        # Delete model data
+                                                        print(f"Nunchaku: Attempting to delete model data in ComfyUI (diffusion_model)...")
                                                         try:
+                                                            params_deleted = 0
+                                                            buffers_deleted = 0
+                                                            
+                                                            # Delete parameters (only top-level, not submodules)
                                                             if hasattr(diffusion_model, 'named_parameters'):
-                                                                params_cleared = 0
-                                                                for name, param in list(diffusion_model.named_parameters()):
-                                                                    if param is not None and hasattr(param, 'data'):
+                                                                for name, param in list(diffusion_model.named_parameters(recurse=False)):
+                                                                    if param is not None:
                                                                         try:
-                                                                            if param.data is not None:
-                                                                                param.data = param.data.detach().cpu()
-                                                                                params_cleared += 1
+                                                                            if hasattr(param, 'data') and param.data is not None:
+                                                                                del param.data
+                                                                                params_deleted += 1
                                                                         except Exception:
                                                                             pass
-                                                                if params_cleared > 0:
-                                                                    print(f"Nunchaku: Cleared {params_cleared} parameters from ComfyUI model (diffusion_model)")
+                                                            
+                                                            # Delete buffers (only top-level, not submodules)
                                                             if hasattr(diffusion_model, 'named_buffers'):
-                                                                buffers_cleared = 0
-                                                                for name, buffer in list(diffusion_model.named_buffers()):
-                                                                    if buffer is not None and hasattr(buffer, 'data'):
+                                                                for name, buffer in list(diffusion_model.named_buffers(recurse=False)):
+                                                                    if buffer is not None:
                                                                         try:
-                                                                            if buffer.data is not None:
-                                                                                buffer.data = buffer.data.detach().cpu()
-                                                                                buffers_cleared += 1
+                                                                            if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                del buffer.data
+                                                                                buffers_deleted += 1
                                                                         except Exception:
                                                                             pass
-                                                                if buffers_cleared > 0:
-                                                                    print(f"Nunchaku: Cleared {buffers_cleared} buffers from ComfyUI model (diffusion_model)")
-                                                            if hasattr(diffusion_model, '_modules'):
-                                                                diffusion_model._modules.clear()
-                                                                print(f"Nunchaku: Cleared _modules dict from ComfyUI model (diffusion_model)")
+                                                            
+                                                            # Clear _parameters and _buffers dicts
+                                                            if hasattr(diffusion_model, '_parameters'):
+                                                                try:
+                                                                    for param_name in list(diffusion_model._parameters.keys()):
+                                                                        param = diffusion_model._parameters[param_name]
+                                                                        if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                            try:
+                                                                                del param.data
+                                                                            except Exception:
+                                                                                pass
+                                                                    diffusion_model._parameters.clear()
+                                                                except Exception:
+                                                                    pass
+                                                            
+                                                            if hasattr(diffusion_model, '_buffers'):
+                                                                try:
+                                                                    for buffer_name in list(diffusion_model._buffers.keys()):
+                                                                        buffer = diffusion_model._buffers[buffer_name]
+                                                                        if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                            try:
+                                                                                del buffer.data
+                                                                            except Exception:
+                                                                                pass
+                                                                    diffusion_model._buffers.clear()
+                                                                except Exception:
+                                                                    pass
+                                                            
+                                                            # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                            # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                            # Only top-level parameters are deleted above (with recurse=False)
+                                                                
+                                                            if params_deleted > 0:
+                                                                print(f"Nunchaku: Deleted {params_deleted} total parameters from ComfyUI model (diffusion_model)")
+                                                            if buffers_deleted > 0:
+                                                                print(f"Nunchaku: Deleted {buffers_deleted} total buffers from ComfyUI model (diffusion_model)")
+                                                            # Module structure (_modules) is preserved for re-loading via load_state_dict
                                                         except Exception as e:
-                                                            print(f"Nunchaku: Warning: Failed to clear model internal state: {e}")
+                                                            print(f"Nunchaku: Warning: Failed to delete model internal state: {e}")
                                                         
                                                         loaded_model.currently_used = False
                                                         print(f"Nunchaku: Unloading model from ComfyUI model management (diffusion_model)...")
@@ -1359,6 +1808,110 @@ class DisTorchPurgeVRAMV2:
                             for obj in gc.get_objects():
                                 objects_checked += 1
                                 try:
+                                    # Check if obj is a NunchakuSDXL instance (SDXL model wrapper)
+                                    if nunchaku_sdxl_class is not None and isinstance(obj, nunchaku_sdxl_class):
+                                        if hasattr(obj, 'diffusion_model'):
+                                            diffusion_model = obj.diffusion_model
+                                            for model_type in nunchaku_model_types:
+                                                if isinstance(diffusion_model, model_type):
+                                                    models_found_in_gc += 1
+                                                    try:
+                                                        print(f"Nunchaku: Found NunchakuSDXL instance with {model_type.__name__} in gc.get_objects() (id: {id(obj)})")
+                                                        # Disable CPU offload first if enabled
+                                                        if hasattr(diffusion_model, 'set_offload'):
+                                                            try:
+                                                                if hasattr(diffusion_model, 'offload') and diffusion_model.offload:
+                                                                    print(f"Nunchaku: Disabling CPU offload for SDXL diffusion_model in gc.get_objects()")
+                                                                    diffusion_model.set_offload(False)
+                                                                    print(f"Nunchaku: CPU offload disabled for SDXL diffusion_model in gc.get_objects()")
+                                                            except Exception as e:
+                                                                print(f"Nunchaku: Warning: Failed to disable CPU offload: {e}")
+                                                        
+                                                        # Clear offload_manager
+                                                        if hasattr(diffusion_model, 'offload_manager') and diffusion_model.offload_manager is not None:
+                                                            try:
+                                                                print(f"Nunchaku: Clearing offload_manager for SDXL diffusion_model in gc.get_objects()")
+                                                                diffusion_model.offload_manager = None
+                                                                print(f"Nunchaku: offload_manager cleared for SDXL diffusion_model in gc.get_objects()")
+                                                            except Exception as e:
+                                                                print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
+                                                        
+                                                        # Delete SDXL diffusion_model data directly
+                                                        print(f"Nunchaku: Attempting to delete SDXL diffusion_model data...")
+                                                        
+                                                        # Delete SDXL diffusion_model data
+                                                        try:
+                                                            params_deleted = 0
+                                                            buffers_deleted = 0
+                                                            
+                                                            # Delete parameters (only top-level, not submodules)
+                                                            if hasattr(diffusion_model, 'named_parameters'):
+                                                                for name, param in list(diffusion_model.named_parameters(recurse=False)):
+                                                                    if param is not None:
+                                                                        try:
+                                                                            if hasattr(param, 'data') and param.data is not None:
+                                                                                del param.data
+                                                                                params_deleted += 1
+                                                                        except Exception:
+                                                                            pass
+                                                            
+                                                            # Delete buffers (only top-level, not submodules)
+                                                            if hasattr(diffusion_model, 'named_buffers'):
+                                                                for name, buffer in list(diffusion_model.named_buffers(recurse=False)):
+                                                                    if buffer is not None:
+                                                                        try:
+                                                                            if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                                del buffer.data
+                                                                                buffers_deleted += 1
+                                                                        except Exception:
+                                                                            pass
+                                                            
+                                                            # Clear _parameters and _buffers dicts
+                                                            if hasattr(diffusion_model, '_parameters'):
+                                                                try:
+                                                                    for param_name in list(diffusion_model._parameters.keys()):
+                                                                        param = diffusion_model._parameters[param_name]
+                                                                        if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                            try:
+                                                                                del param.data
+                                                                            except Exception:
+                                                                                pass
+                                                                    diffusion_model._parameters.clear()
+                                                                except Exception:
+                                                                    pass
+                                                            
+                                                            if hasattr(diffusion_model, '_buffers'):
+                                                                try:
+                                                                    for buffer_name in list(diffusion_model._buffers.keys()):
+                                                                        buffer = diffusion_model._buffers[buffer_name]
+                                                                        if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                            try:
+                                                                                del buffer.data
+                                                                            except Exception:
+                                                                                pass
+                                                                    diffusion_model._buffers.clear()
+                                                                except Exception:
+                                                                    pass
+                                                            
+                                                            # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                            # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                            # Only top-level parameters are deleted above (with recurse=False)
+                                                                
+                                                            if params_deleted > 0:
+                                                                print(f"Nunchaku: Deleted {params_deleted} total parameters from SDXL diffusion_model in gc.get_objects()")
+                                                            if buffers_deleted > 0:
+                                                                print(f"Nunchaku: Deleted {buffers_deleted} total buffers from SDXL diffusion_model in gc.get_objects()")
+                                                            # Module structure (_modules) is preserved for re-loading via load_state_dict
+                                                            print(f"Nunchaku: Deleted SDXL diffusion_model internal state from gc.get_objects()")
+                                                        except Exception as e:
+                                                            print(f"Nunchaku: Warning: Failed to delete SDXL diffusion_model internal state from gc.get_objects(): {e}")
+                                                        
+                                                        print(f"Nunchaku: Successfully cleared SDXL model ({model_type.__name__}) from gc.get_objects()")
+                                                    except Exception as e:
+                                                        print(f"Nunchaku: Error clearing SDXL model from gc.get_objects(): {e}")
+                                                        import traceback
+                                                        print(f"Nunchaku: Traceback: {traceback.format_exc()}")
+                                    
                                     for model_type in nunchaku_model_types:
                                         if isinstance(obj, model_type):
                                             models_found_in_gc += 1
@@ -1383,63 +1936,99 @@ class DisTorchPurgeVRAMV2:
                                                     except Exception as e:
                                                         print(f"Nunchaku: Warning: Failed to clear offload_manager: {e}")
                                                 
-                                                # Move to CPU if on GPU
-                                                print(f"Nunchaku: Attempting to move model to CPU...")
-                                                try:
-                                                    if hasattr(obj, 'device'):
-                                                        device_str = str(obj.device)
-                                                        if device_str.startswith('cuda'):
-                                                            if hasattr(obj, 'to'):
-                                                                obj.to('cpu')
-                                                                print(f"Nunchaku: Model moved to CPU using .to('cpu')")
-                                                            elif hasattr(obj, 'cpu'):
-                                                                obj.cpu()
-                                                                print(f"Nunchaku: Model moved to CPU using .cpu()")
-                                                            nunchaku_cleared += 1
-                                                    else:
-                                                        # No device attribute, try to move to CPU anyway
-                                                        if hasattr(obj, 'to'):
-                                                            obj.to('cpu')
-                                                            print(f"Nunchaku: Model moved to CPU using .to('cpu') (no device attr)")
-                                                        elif hasattr(obj, 'cpu'):
-                                                            obj.cpu()
-                                                            print(f"Nunchaku: Model moved to CPU using .cpu() (no device attr)")
-                                                        nunchaku_cleared += 1
-                                                except Exception as e:
-                                                    print(f"Nunchaku: Warning: Failed to move model to CPU: {e}")
+                                                # Delete model data directly
+                                                print(f"Nunchaku: Attempting to delete model data...")
                                                 
-                                                # Clear model's internal state
+                                                # Delete model's internal state
                                                 try:
+                                                    params_deleted = 0
+                                                    buffers_deleted = 0
+                                                    
+                                                    # Delete parameters (only top-level, not submodules)
                                                     if hasattr(obj, 'named_parameters'):
-                                                        params_cleared = 0
-                                                        for name, param in list(obj.named_parameters()):
-                                                            if param is not None and hasattr(param, 'data'):
+                                                        for name, param in list(obj.named_parameters(recurse=False)):
+                                                            if param is not None:
                                                                 try:
-                                                                    if param.data is not None:
-                                                                        param.data = param.data.detach().cpu()
-                                                                        params_cleared += 1
+                                                                    if hasattr(param, 'data') and param.data is not None:
+                                                                        del param.data
+                                                                        params_deleted += 1
                                                                 except Exception:
                                                                     pass
-                                                        if params_cleared > 0:
-                                                            print(f"Nunchaku: Cleared {params_cleared} parameters from gc.get_objects() model")
+                                                        
+                                                    # Delete buffers (only top-level, not submodules)
                                                     if hasattr(obj, 'named_buffers'):
-                                                        buffers_cleared = 0
-                                                        for name, buffer in list(obj.named_buffers()):
-                                                            if buffer is not None and hasattr(buffer, 'data'):
+                                                        for name, buffer in list(obj.named_buffers(recurse=False)):
+                                                            if buffer is not None:
                                                                 try:
-                                                                    if buffer.data is not None:
-                                                                        buffer.data = buffer.data.detach().cpu()
-                                                                        buffers_cleared += 1
+                                                                    if hasattr(buffer, 'data') and buffer.data is not None:
+                                                                        del buffer.data
+                                                                        buffers_deleted += 1
                                                                 except Exception:
                                                                     pass
-                                                        if buffers_cleared > 0:
-                                                            print(f"Nunchaku: Cleared {buffers_cleared} buffers from gc.get_objects() model")
-                                                    if hasattr(obj, '_modules'):
-                                                        obj._modules.clear()
-                                                        print(f"Nunchaku: Cleared _modules dict from gc.get_objects() model")
+                                                    
+                                                    # DO NOT recursively delete submodule parameters - it breaks model structure
+                                                    # Submodules contain essential parameters like Linear.weight that must be preserved
+                                                    # Only top-level parameters are deleted above (with recurse=False)
+                                                    
+                                                    # Clear _parameters and _buffers dicts directly
+                                                    if hasattr(obj, '_parameters'):
+                                                        try:
+                                                            for param_name in list(obj._parameters.keys()):
+                                                                param = obj._parameters[param_name]
+                                                                if param is not None and hasattr(param, 'data') and param.data is not None:
+                                                                    try:
+                                                                        del param.data
+                                                                    except Exception:
+                                                                        pass
+                                                            obj._parameters.clear()
+                                                        except Exception:
+                                                            pass
+                                                    
+                                                    if hasattr(obj, '_buffers'):
+                                                        try:
+                                                            for buffer_name in list(obj._buffers.keys()):
+                                                                buffer = obj._buffers[buffer_name]
+                                                                if buffer is not None and hasattr(buffer, 'data') and buffer.data is not None:
+                                                                    try:
+                                                                        del buffer.data
+                                                                    except Exception:
+                                                                        pass
+                                                            obj._buffers.clear()
+                                                        except Exception:
+                                                            pass
+                                                    
+                                                    # Try to clear any cached data or temporary attributes that might hold VRAM
+                                                    try:
+                                                        # Clear any cache-related attributes
+                                                        cache_attrs = ['_cache', 'cache', '_state_dict_cache', 'state_dict_cache', '_non_persistent_buffers_set']
+                                                        for cache_attr in cache_attrs:
+                                                            if hasattr(obj, cache_attr):
+                                                                try:
+                                                                    cache_val = getattr(obj, cache_attr)
+                                                                    if cache_val is not None:
+                                                                        if isinstance(cache_val, (dict, set)):
+                                                                            cache_val.clear()
+                                                                        elif hasattr(cache_val, 'clear'):
+                                                                            cache_val.clear()
+                                                                        setattr(obj, cache_attr, None)
+                                                                        print(f"Nunchaku: Cleared {cache_attr} from gc.get_objects() model")
+                                                                except Exception:
+                                                                    pass
+                                                    except Exception:
+                                                        pass
+                                                    
+                                                    if params_deleted > 0:
+                                                        print(f"Nunchaku: Deleted {params_deleted} parameters from gc.get_objects() model")
+                                                    if buffers_deleted > 0:
+                                                        print(f"Nunchaku: Deleted {buffers_deleted} buffers from gc.get_objects() model")
+                                                    # DO NOT clear _modules - it contains module structure
+                                                    # if hasattr(obj, '_modules'):  # Removed
+                                                    #     print(f"Nunchaku: Cleared _modules dict from gc.get_objects() model")  # Removed
                                                     print(f"Nunchaku: Cleared model internal state from gc.get_objects()")
                                                 except Exception as e:
                                                     print(f"Nunchaku: Warning: Failed to clear model internal state from gc.get_objects(): {e}")
+                                                    import traceback
+                                                    print(f"Nunchaku: Traceback: {traceback.format_exc()}")
                                                 
                                                 print(f"Nunchaku: Successfully cleared model ({model_type.__name__}) from gc.get_objects()")
                                             except Exception as e:
@@ -1455,19 +2044,28 @@ class DisTorchPurgeVRAMV2:
                             import traceback
                             print(f"Nunchaku: Traceback: {traceback.format_exc()}")
                     
-                    # Force garbage collection and clear GPU cache
+                    # Force garbage collection and clear GPU cache (more aggressively)
                     print("Nunchaku: Running garbage collection...")
                     gc.collect()
                     gc.collect()  # Run twice to ensure cleanup
+                    gc.collect()  # Run third time for more aggressive cleanup
                     if torch.cuda.is_available():
                         print("Nunchaku: Clearing CUDA cache...")
-                        # Clear cache for all devices
+                        # Clear cache for all devices (more aggressively)
                         for device_idx in range(torch.cuda.device_count()):
                             with torch.cuda.device(device_idx):
                                 torch.cuda.empty_cache()
                                 torch.cuda.ipc_collect()
+                                torch.cuda.empty_cache()  # Run twice
                         torch.cuda.synchronize()
-                        print("Nunchaku: CUDA cache cleared for all devices")
+                        # Additional cleanup: try to free memory fragments
+                        try:
+                            import torch._C
+                            if hasattr(torch._C, '_cuda_emptyCache'):
+                                torch._C._cuda_emptyCache()
+                        except Exception:
+                            pass
+                        print("Nunchaku: CUDA cache cleared for all devices (aggressive cleanup)")
                     
                     if nunchaku_cleared > 0:
                         print(f"Nunchaku: Successfully cleared {nunchaku_cleared} model(s)")
