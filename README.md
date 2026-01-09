@@ -10,7 +10,7 @@ This is a completely original implementation designed specifically for Distorch 
 
 ## Features
 
-### Four Node Types
+### Five Node Types
 
 #### Model Patch Memory Cleaner (New in v1.2.0)
 
@@ -101,6 +101,31 @@ This is a completely original implementation designed specifically for Distorch 
    * `force_gc`: Force garbage collection  
    * `reset_virtual_memory`: Reset virtual memory  
    * `restore_original_functions`: Restore original functions
+
+#### Patch Sage Attention DM (New in v2.2.0)
+
+* **Description**: Experimental node for patching ComfyUI's attention mechanism to use SageAttention
+* **Features**: Replaces ComfyUI's standard attention with SageAttention for improved memory efficiency and performance
+* **Input**: Model (MODEL)
+* **Output**: Model (MODEL)
+* **Options**:
+  * `sage_attention`: SageAttention mode selection
+    * `disabled`: Disable SageAttention (restore original attention)
+    * `auto`: Automatic SageAttention implementation
+    * `sageattn_qk_int8_pv_fp16_cuda`: CUDA implementation (QK int8, PV FP16)
+    * `sageattn_qk_int8_pv_fp16_triton`: Triton implementation (QK int8, PV FP16)
+    * `sageattn_qk_int8_pv_fp8_cuda`: CUDA implementation (QK int8, PV FP8)
+    * `sageattn_qk_int8_pv_fp8_cuda++`: CUDA implementation (QK int8, PV FP8, optimized)
+    * `sageattn3`: SageAttention 3 implementation (Blackwell support)
+    * `sageattn3_per_block_mean`: SageAttention 3 implementation (per-block mean version)
+  * `allow_compile`: Allow torch.compile for SageAttention function (requires sageattn 2.2.0 or higher, default: False)
+* **Use Case**: Use this node to replace ComfyUI's attention mechanism with SageAttention for better memory efficiency and performance. The node patches attention on each model execution and automatically cleans up afterward.
+* **Technical Details**:
+  * Uses ComfyUI's callback system (ON_PRE_RUN, ON_CLEANUP) to patch attention dynamically
+  * Automatically detects SageAttention version and logs detailed information
+  * Handles Flash-Attention state detection and logging when disabled
+  * Compatible with ComfyUI's attention function format via wrap_attn decorator
+  * Supports multiple SageAttention implementations (CUDA, Triton, SageAttention 3)
 
 ## Installation
 
@@ -266,6 +291,7 @@ or
 * For ModelPatchLoader workflows: Always use Model Patch Memory Cleaner before upscaling to prevent OOM. Note that patch model format loaded via ModelPatchLoader is an exceptional format different from standard ControlNet models.
 * For Qwen3-VL workflows: Use DisTorchPurgeVRAMV2 with `purge_qwen3vl_models: True` after Qwen3-VL model usage to prevent OOM. The node automatically handles device_map="auto" case for models distributed across multiple devices.
 * For Nunchaku workflows (FLUX/Z-Image/Qwen-Image/SDXL): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()). For Nunchaku SDXL models (v2.1.0), the node now includes cache clearing functionality that can release approximately 2.5GB of VRAM.
+* For SageAttention workflows (v2.2.0): Use Patch Sage Attention DM node to replace ComfyUI's attention mechanism with SageAttention for improved memory efficiency and performance. The node supports multiple SageAttention implementations and automatically patches attention on each model execution. To disable SageAttention, run the node again with `sage_attention` set to `disabled`.
 
 ## License
 
@@ -277,6 +303,7 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## Release History
 
+* **v2.2.0** – Added Patch Sage Attention DM node for patching ComfyUI's attention mechanism to use SageAttention. Supports multiple SageAttention implementations (auto, CUDA, Triton, SageAttention 3) with dynamic patching via ComfyUI's callback system. Automatically detects SageAttention version and logs detailed information. Handles Flash-Attention state detection when disabled. Compatible with ComfyUI's attention function format. See [Release Notes v2.2.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.2.0) for details.
 * **v2.1.0** – Added Nunchaku SDXL model purging support to DisTorchPurgeVRAMV2 node. NunchakuSDXLUNet2DConditionModel and NunchakuSDXL wrapper class are now supported. Added cache and temporary data clearing functionality for all Nunchaku detection methods (sys.modules, current_loaded_models, gc.get_objects()). Implemented more aggressive garbage collection (3x gc.collect()) and CUDA cache clearing. Improved VRAM release for Nunchaku SDXL models (approximately 2.5GB). Model structure is preserved while clearing top-level parameters only. See [Release Notes v2.1.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.1.0) for details.
 * **v2.0.0** – Added Qwen3-VL and Nunchaku model purging support to DisTorchPurgeVRAMV2 node. Qwen3-VL models can now be purged from GPU memory with device_map="auto" support. Nunchaku models (FLUX/Z-Image/Qwen-Image) can be purged with CPU offload handling. Enhanced CUDA cache clearing to support all devices. Fixed any() function name collision with AnyType. Added comprehensive debug logging. Changed display name to ComfyUI-VRAM-Manager. See [Release Notes v2.0.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.0.0) for details.
 * **v1.3.1** – Improved SeedVR2 cache detection and messaging. Removed duplicate messages. Clarified that cache_model=False (default) means models are never cached in GlobalModelCache. Added detailed debug information for cache state. See [Release Notes v1.3.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.3.1) for details.
