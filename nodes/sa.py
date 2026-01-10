@@ -4,18 +4,81 @@ SageAttention patch node for DistorchMemoryManager
 import torch
 import logging
 from comfy.ldm.modules import attention as comfy_attention
-import comfy.model_management as mm
 from comfy.ldm.modules.attention import wrap_attn
 from comfy.patcher_extension import CallbacksMP
+from comfy.cli_args import args
+
+# Import model_management safely (may fail during module import)
+try:
+    import comfy.model_management as mm
+except Exception:
+    mm = None
 
 # SageAttention modes
 sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 
-def get_sage_func_dm(sage_attention, allow_compile=False):
-    # Detect SageAttention version
+
+# Flash-Attention version detection (independent from model_management)
+def get_flash_attention_info():
+    """
+    Get Flash-Attention version and type information.
+    Returns: (is_available, version, type)
+    """
+    flash_is_available = False
+    flash_attn_version = None
+    flash_attn_type = None
+    
+    # Check if Flash-Attention is available regardless of args.use_flash_attention
+    try:
+        import flash_attn
+        flash_is_available = True
+        try:
+            flash_attn_version = flash_attn.__version__
+            try:
+                version_parts = flash_attn_version.split('.')
+                major_version = int(version_parts[0])
+                if major_version >= 3:
+                    flash_attn_type = "FA-3"
+                else:
+                    flash_attn_type = "FA-2"
+            except Exception:
+                flash_attn_type = None
+        except AttributeError:
+            try:
+                import importlib.metadata
+                flash_attn_version = importlib.metadata.version("flash-attn")
+                try:
+                    version_parts = flash_attn_version.split('.')
+                    major_version = int(version_parts[0])
+                    if major_version >= 3:
+                        flash_attn_type = "FA-3"
+                    else:
+                        flash_attn_type = "FA-2"
+                except Exception:
+                    flash_attn_type = None
+            except Exception:
+                flash_attn_version = "unknown"
+                flash_attn_type = None
+    except ImportError:
+        flash_is_available = False
+    except Exception:
+        flash_is_available = False
+    
+    return flash_is_available, flash_attn_version, flash_attn_type
+
+
+# SageAttention version detection (independent from model_management)
+def get_sage_attention_info():
+    """
+    Get SageAttention version information.
+    Returns: (version, cuda_version, torch_version)
+    """
+    sage_version = None
+    cuda_version = "unknown"
+    torch_version = "unknown"
+    
     try:
         import sageattention
-        sage_version = None
         try:
             sage_version = sageattention.__version__
         except AttributeError:
@@ -25,17 +88,49 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
             except Exception:
                 sage_version = None
         
-        if sage_version and sage_version != "unknown":
-            try:
-                import torch
-                cuda_version = torch.version.cuda or "unknown"
-                torch_version = torch.version.__version__ or "unknown"
-                logging.info(f"Patching comfy attention to use SageAttention {sage_version}+cu{cuda_version}torch{torch_version}")
-            except:
-                logging.info(f"Patching comfy attention to use SageAttention {sage_version}")
-        else:
-            logging.info("Patching comfy attention to use sageattn")
+        try:
+            cuda_version = torch.version.cuda or "unknown"
+            torch_version = torch.version.__version__ or "unknown"
+        except:
+            pass
     except:
+        pass
+    
+    return sage_version, cuda_version, torch_version
+
+
+# Check if Flash-Attention is enabled (independent from model_management)
+def is_flash_attention_enabled():
+    """
+    Check if Flash-Attention is currently enabled.
+    Returns: bool
+    """
+    # First check if Flash-Attention is actually being used
+    try:
+        current_attn = comfy_attention.optimized_attention
+        attn_name = current_attn.__name__
+        if attn_name == "attention_flash":
+            return True
+    except:
+        pass
+    
+    # Check if Flash-Attention is available and args.use_flash_attention is set
+    flash_is_available, _, _ = get_flash_attention_info()
+    if flash_is_available and args.use_flash_attention:
+        return True
+    
+    return False
+
+def get_sage_func_dm(sage_attention, allow_compile=False):
+    # Detect SageAttention version using our own function
+    sage_version, cuda_version, torch_version = get_sage_attention_info()
+    
+    if sage_version and sage_version != "unknown":
+        if cuda_version != "unknown" and torch_version != "unknown":
+            logging.info(f"Patching comfy attention to use SageAttention {sage_version}+cu{cuda_version}torch{torch_version}")
+        else:
+            logging.info(f"Patching comfy attention to use SageAttention {sage_version}")
+    else:
         logging.info("Patching comfy attention to use sageattn")
     
     from sageattention import sageattn
@@ -67,7 +162,7 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
 
     if not allow_compile:
         sage_func = torch.compiler.disable()(sage_func)
-
+    
     @wrap_attn
     def attention_sage(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
         in_dtype = v.dtype
@@ -137,43 +232,30 @@ class PatchSageAttentionDM():
                     model.model_options["transformer_options"] = {}
                 model.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
             else:
+                # disabled: Load Flash-Attention if available (without --use-flash-attention option)
                 if "transformer_options" in model.model_options:
                     if "optimized_attention_override" in model.model_options["transformer_options"]:
                         del model.model_options["transformer_options"]["optimized_attention_override"]
                 
-                flash_attention_enabled = False
-                try:
-                    if hasattr(mm, 'FLASH_IS_AVAILABLE') and mm.FLASH_IS_AVAILABLE:
-                        flash_attention_enabled = True
-                    elif hasattr(mm, 'flash_attention_enabled'):
-                        flash_attention_enabled = mm.flash_attention_enabled()
-                    else:
-                        try:
-                            current_attn = comfy_attention.optimized_attention
-                            attn_name = current_attn.__name__
-                            if attn_name == "attention_flash":
-                                flash_attention_enabled = True
-                        except:
-                            pass
-                except:
-                    pass
+                # Get Flash-Attention info using our own function (same as SA)
+                flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
                 
-                if flash_attention_enabled:
+                if flash_is_available and hasattr(comfy_attention, 'attention_flash'):
+                    # Set Flash-Attention as override
+                    if "transformer_options" not in model.model_options:
+                        model.model_options["transformer_options"] = {}
+                    
+                    def attention_override_flash(func, *args, **kwargs):
+                        return comfy_attention.attention_flash(*args, **kwargs)
+                    model.model_options["transformer_options"]["optimized_attention_override"] = attention_override_flash
+                    
+                    # Log Flash-Attention version (same format as SA)
                     logging.info("Restoring initial comfy attention")
-                    if hasattr(mm, 'FLASH_ATTN_VERSION') and mm.FLASH_ATTN_VERSION and mm.FLASH_ATTN_VERSION != "unknown":
-                        try:
-                            version_parts = mm.FLASH_ATTN_VERSION.split('.')
-                            major_version = int(version_parts[0])
-                            if major_version >= 3:
-                                flash_attn_type = "FA-3"
-                            else:
-                                flash_attn_type = "FA-2"
-                            logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {mm.FLASH_ATTN_VERSION}) direct")
-                        except Exception:
-                            if hasattr(mm, 'FLASH_ATTN_TYPE') and mm.FLASH_ATTN_TYPE:
-                                logging.info(f"[ComfyUI] Using {mm.FLASH_ATTN_TYPE} (Flash-Attention {mm.FLASH_ATTN_VERSION}) direct")
-                            else:
-                                logging.info(f"[ComfyUI] Using Flash-Attention {mm.FLASH_ATTN_VERSION} direct")
+                    if flash_attn_version and flash_attn_version != "unknown":
+                        if flash_attn_type:
+                            logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+                        else:
+                            logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
                     else:
                         logging.info("[ComfyUI] Using Flash-Attention direct")
                 else:
@@ -186,39 +268,17 @@ class PatchSageAttentionDM():
                     del model.model_options["transformer_options"]["optimized_attention_override"]
             
             # Output FA log even when SA is enabled, during reset
-            flash_attention_enabled = False
-            try:
-                if hasattr(mm, 'FLASH_IS_AVAILABLE') and mm.FLASH_IS_AVAILABLE:
-                    flash_attention_enabled = True
-                elif hasattr(mm, 'flash_attention_enabled'):
-                    flash_attention_enabled = mm.flash_attention_enabled()
-                else:
-                    try:
-                        current_attn = comfy_attention.optimized_attention
-                        attn_name = current_attn.__name__
-                        if attn_name == "attention_flash":
-                            flash_attention_enabled = True
-                    except:
-                        pass
-            except:
-                pass
+            # Get Flash-Attention info using our own function (same as SA)
+            flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
             
-            if flash_attention_enabled:
+            if flash_is_available:
                 logging.info("Restoring initial comfy attention")
-                if hasattr(mm, 'FLASH_ATTN_VERSION') and mm.FLASH_ATTN_VERSION and mm.FLASH_ATTN_VERSION != "unknown":
-                    try:
-                        version_parts = mm.FLASH_ATTN_VERSION.split('.')
-                        major_version = int(version_parts[0])
-                        if major_version >= 3:
-                            flash_attn_type = "FA-3"
-                        else:
-                            flash_attn_type = "FA-2"
-                        logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {mm.FLASH_ATTN_VERSION}) direct")
-                    except Exception:
-                        if hasattr(mm, 'FLASH_ATTN_TYPE') and mm.FLASH_ATTN_TYPE:
-                            logging.info(f"[ComfyUI] Using {mm.FLASH_ATTN_TYPE} (Flash-Attention {mm.FLASH_ATTN_VERSION}) direct")
-                        else:
-                            logging.info(f"[ComfyUI] Using Flash-Attention {mm.FLASH_ATTN_VERSION} direct")
+                # Log Flash-Attention version (same format as SA)
+                if flash_attn_version and flash_attn_version != "unknown":
+                    if flash_attn_type:
+                        logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+                    else:
+                        logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
                 else:
                     logging.info("[ComfyUI] Using Flash-Attention direct")
             else:
