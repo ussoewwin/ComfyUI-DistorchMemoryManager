@@ -8,31 +8,31 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
 try:
-    from .nodes.memory_manager import MemoryManager, SafeMemoryManager, any
+    from .memory_manager import MemoryManager, SafeMemoryManager, any
 except ImportError:
     try:
-        from nodes.memory_manager import MemoryManager, SafeMemoryManager, any
+        from memory_manager import MemoryManager, SafeMemoryManager, any
     except ImportError:
         MemoryManager = None
         SafeMemoryManager = None
         # Fallback: define any locally if import fails
-        class AnyType(str):
-            """A special class that is always equal in not equal comparisons. Credit to pythongosssss"""
-            def __eq__(self, __value: object) -> bool:
-                return True
-            def __ne__(self, __value: object) -> bool:
-                return False
-            def __repr__(self):
-                return str(self)
-        any = AnyType("*")
+class AnyType(str):
+    """A special class that is always equal in not equal comparisons. Credit to pythongosssss"""
+    def __eq__(self, __value: object) -> bool:
+        return True
+    def __ne__(self, __value: object) -> bool:
+        return False
+    def __repr__(self):
+        return str(self)
+any = AnyType("*")
 
 
 # Import Purge VRAM V2 node
 try:
-    from .nodes.purge_vram import DisTorchPurgeVRAMV2
+    from .purge_vram import DisTorchPurgeVRAMV2
 except ImportError:
     try:
-        from nodes.purge_vram import DisTorchPurgeVRAMV2
+        from purge_vram import DisTorchPurgeVRAMV2
     except ImportError:
         DisTorchPurgeVRAMV2 = None
 
@@ -126,10 +126,10 @@ class ModelPatchMemoryCleaner:
 
 # Import SageAttention patch node
 try:
-    from .nodes.sa import PatchSageAttentionDM
+    from .sa import PatchSageAttentionDM
 except ImportError:
     try:
-        from nodes.sa import PatchSageAttentionDM
+        from sa import PatchSageAttentionDM
     except ImportError:
         PatchSageAttentionDM = None
 
