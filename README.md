@@ -28,10 +28,10 @@ This is a completely original implementation designed specifically for Distorch 
   * Safely unloads model patches from VRAM
   * Performs cleanup_models_gc() to prevent memory leaks
 
-#### Purge VRAM V2 Compatibility (v1.10, Enhanced in v1.2.0, v2.0.0, v2.1.0)
+#### Purge VRAM V2 Compatibility (v1.10, Enhanced in v1.2.0, v2.0.0, v2.2.0)
 
 * **Description**: Restored LayerStyle's **LayerUtility: Purge VRAM V2** inside the Distortch suite (original node) with enhanced model unloading capabilities, SeedVR2 support, and Qwen3-VL/Nunchaku model purging
-* **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Enhanced in v2.1.0 with Nunchaku SDXL model support. Now supports SeedVR2 DiT and VAE model purging, Qwen3-VL models, and Nunchaku models (FLUX/Z-Image/Qwen-Image/SDXL).
+* **Features**: Identical UI/behavior; keeps legacy workflows working without LayerStyle. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Enhanced in v2.2.0 with Nunchaku SDXL model support. Now supports SeedVR2 DiT and VAE model purging, Qwen3-VL models, and Nunchaku models (FLUX/Z-Image/Qwen-Image/SDXL).
 * **Input**: Any data type (ANY) passthrough
 * **Options**:  
    * `purge_cache`: Run `gc.collect()`, flush CUDA caches, call `torch.cuda.ipc_collect()`  
@@ -50,12 +50,12 @@ This is a completely original implementation designed specifically for Distorch 
      * Searches for Qwen3-VL models in sys.modules and gc.get_objects()
      * Handles device_map="auto" case for multi-device models
      * Clears model parameters, buffers, and internal state
-   * `purge_nunchaku_models`: Clear Nunchaku models (FLUX/Z-Image/Qwen-Image/SDXL) from GPU memory (v2.0.0, Enhanced in v2.1.0)
-     * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, NunchakuQwenImageTransformer2DModel, and NunchakuSDXLUNet2DConditionModel (v2.1.0)
+   * `purge_nunchaku_models`: Clear Nunchaku models (FLUX/Z-Image/Qwen-Image/SDXL) from GPU memory (v2.0.0, Enhanced in v2.2.0)
+     * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, NunchakuQwenImageTransformer2DModel, and NunchakuSDXLUNet2DConditionModel (v2.2.0)
      * Disables CPU offload before clearing models
      * Searches in sys.modules, ComfyUI current_loaded_models, and gc.get_objects()
-     * Clears cache and temporary data attributes (v2.1.0)
-     * Handles NunchakuSDXL wrapper class with diffusion_model access (v2.1.0)
+     * Clears cache and temporary data attributes (v2.2.0)
+     * Handles NunchakuSDXL wrapper class with diffusion_model access (v2.2.0)
 * **Enhancements in v1.2.0**:
   * More aggressive model unloading with proper error handling
   * None checks and callable() checks for all method calls
@@ -69,14 +69,14 @@ This is a completely original implementation designed specifically for Distorch 
   * Comprehensive debug logging for model detection and purging
   * Fixed any() function name collision with AnyType
   * Changed display name to ComfyUI-VRAM-Manager
-* **Enhancements in v2.1.0**:
+* **Enhancements in v2.2.0**:
   * Nunchaku SDXL model purging support (NunchakuSDXLUNet2DConditionModel)
   * NunchakuSDXL wrapper class detection and handling
   * Cache and temporary data clearing for all Nunchaku detection methods
   * More aggressive garbage collection (3x gc.collect()) and CUDA cache clearing
   * Improved VRAM release for Nunchaku SDXL models (approximately 2.5GB)
   * Preserves model structure while clearing top-level parameters only
-* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.1.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing.
+* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.2.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing.
 
 #### Safe Memory Manager (Recommended)
 
@@ -102,7 +102,7 @@ This is a completely original implementation designed specifically for Distorch 
    * `reset_virtual_memory`: Reset virtual memory  
    * `restore_original_functions`: Restore original functions
 
-#### Patch Sage Attention DM (New in v2.2.0)
+#### Patch Sage Attention DM (New in v2.3.0)
 
 * **Description**: Experimental node for patching ComfyUI's attention mechanism to use SageAttention
 * **Features**: Replaces ComfyUI's standard attention with SageAttention for improved memory efficiency and performance
@@ -244,8 +244,8 @@ or
 2. Enable `purge_nunchaku_models: True` to clear Nunchaku models from GPU memory
 3. The node automatically disables CPU offload before clearing models
 4. Enable `purge_cache: True` and `purge_models: True` for comprehensive cleanup
-5. Works with NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, NunchakuQwenImageTransformer2DModel, and NunchakuSDXLUNet2DConditionModel (v2.1.0)
-6. For Nunchaku SDXL models, the node now clears cache and temporary data attributes, releasing approximately 2.5GB of VRAM (v2.1.0)
+5. Works with NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, NunchakuQwenImageTransformer2DModel, and NunchakuSDXLUNet2DConditionModel (v2.2.0)
+6. For Nunchaku SDXL models, the node now clears cache and temporary data attributes, releasing approximately 2.5GB of VRAM (v2.2.0)
 
 ## Technical Details
 
@@ -266,15 +266,15 @@ or
   * Handles device_map="auto" case for multi-device models
   * Clears model parameters, buffers, and internal state
   * Supports hf_device_map processing for distributed models
-* Nunchaku model purging (v1.4.0, Enhanced in v2.1.0)
-  * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, NunchakuQwenImageTransformer2DModel, and NunchakuSDXLUNet2DConditionModel (v2.1.0)
+* Nunchaku model purging (v1.4.0, Enhanced in v2.2.0)
+  * Supports NunchakuFluxTransformer2dModel, NunchakuZImageTransformer2DModel, NunchakuQwenImageTransformer2DModel, and NunchakuSDXLUNet2DConditionModel (v2.2.0)
   * Automatically disables CPU offload before clearing models
   * Searches in sys.modules, ComfyUI current_loaded_models, and gc.get_objects()
   * Handles nested model structures (ModelPatcher, ComfyFluxWrapper)
   * Clears offload_manager to release offloaded memory
-  * NunchakuSDXL wrapper class detection and diffusion_model access (v2.1.0)
-  * Cache and temporary data clearing (_cache, _state_dict_cache, _non_persistent_buffers_set) (v2.1.0)
-  * More aggressive garbage collection and CUDA cache clearing for better VRAM release (v2.1.0)
+  * NunchakuSDXL wrapper class detection and diffusion_model access (v2.2.0)
+  * Cache and temporary data clearing (_cache, _state_dict_cache, _non_persistent_buffers_set) (v2.2.0)
+  * More aggressive garbage collection and CUDA cache clearing for better VRAM release (v2.2.0)
 
 ### Safety Features
 
@@ -290,8 +290,8 @@ or
 * Note: For OOM during video generation inference (where VRAM is critical), paging file expansion won't help
 * For ModelPatchLoader workflows: Always use Model Patch Memory Cleaner before upscaling to prevent OOM. Note that patch model format loaded via ModelPatchLoader is an exceptional format different from standard ControlNet models.
 * For Qwen3-VL workflows: Use DisTorchPurgeVRAMV2 with `purge_qwen3vl_models: True` after Qwen3-VL model usage to prevent OOM. The node automatically handles device_map="auto" case for models distributed across multiple devices.
-* For Nunchaku workflows (FLUX/Z-Image/Qwen-Image/SDXL): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()). For Nunchaku SDXL models (v2.1.0), the node now includes cache clearing functionality that can release approximately 2.5GB of VRAM.
-* For SageAttention workflows (v2.2.0): Use Patch Sage Attention DM node to replace ComfyUI's attention mechanism with SageAttention for improved memory efficiency and performance. The node supports multiple SageAttention implementations and automatically patches attention on each model execution. To disable SageAttention, run the node again with `sage_attention` set to `disabled`.
+* For Nunchaku workflows (FLUX/Z-Image/Qwen-Image/SDXL): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()). For Nunchaku SDXL models (v2.2.0), the node now includes cache clearing functionality that can release approximately 2.5GB of VRAM.
+* For SageAttention workflows (v2.3.0): Use Patch Sage Attention DM node to replace ComfyUI's attention mechanism with SageAttention for improved memory efficiency and performance. The node supports multiple SageAttention implementations and automatically patches attention on each model execution. To disable SageAttention, run the node again with `sage_attention` set to `disabled`.
 
 ## License
 
@@ -303,8 +303,8 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## Release History
 
-* **v2.2.0** – Added Patch Sage Attention DM node for patching ComfyUI's attention mechanism to use SageAttention. Supports multiple SageAttention implementations (auto, CUDA, Triton, SageAttention 3) with dynamic patching via ComfyUI's callback system. Added independent version detection for Flash-Attention and SageAttention (completely independent from model_management module). Flash-Attention auto-load feature when disabled (no CLI options required). Automatically detects and logs SageAttention version with CUDA/PyTorch information, and Flash-Attention version with FA-2/FA-3 type detection. Version information is logged on every generation. Compatible with ComfyUI's attention function format. See [Release Notes v2.2.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.2.0) for details.
-* **v2.1.0** – Added Nunchaku SDXL model purging support to DisTorchPurgeVRAMV2 node. NunchakuSDXLUNet2DConditionModel and NunchakuSDXL wrapper class are now supported. Added cache and temporary data clearing functionality for all Nunchaku detection methods (sys.modules, current_loaded_models, gc.get_objects()). Implemented more aggressive garbage collection (3x gc.collect()) and CUDA cache clearing. Improved VRAM release for Nunchaku SDXL models (approximately 2.5GB). Model structure is preserved while clearing top-level parameters only. See [Release Notes v2.1.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.1.0) for details.
+* **v2.3.0** – Added Patch Sage Attention DM node for patching ComfyUI's attention mechanism to use SageAttention. Supports multiple SageAttention implementations (auto, CUDA, Triton, SageAttention 3) with dynamic patching via ComfyUI's callback system. Added independent version detection for Flash-Attention and SageAttention (completely independent from model_management module). Flash-Attention auto-load feature when disabled (no CLI options required). Automatically detects and logs SageAttention version with CUDA/PyTorch information, and Flash-Attention version with FA-2/FA-3 type detection. Version information is logged on every generation. Compatible with ComfyUI's attention function format. See [Release Notes v2.3.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.0) for details.
+* **v2.2.0** – Added Nunchaku SDXL model purging support to DisTorchPurgeVRAMV2 node. NunchakuSDXLUNet2DConditionModel and NunchakuSDXL wrapper class are now supported. Added cache and temporary data clearing functionality for all Nunchaku detection methods (sys.modules, current_loaded_models, gc.get_objects()). Implemented more aggressive garbage collection (3x gc.collect()) and CUDA cache clearing. Improved VRAM release for Nunchaku SDXL models (approximately 2.5GB). Model structure is preserved while clearing top-level parameters only. See [Release Notes v2.2.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.2.0) for details.
 * **v2.0.0** – Added Qwen3-VL and Nunchaku model purging support to DisTorchPurgeVRAMV2 node. Qwen3-VL models can now be purged from GPU memory with device_map="auto" support. Nunchaku models (FLUX/Z-Image/Qwen-Image) can be purged with CPU offload handling. Enhanced CUDA cache clearing to support all devices. Fixed any() function name collision with AnyType. Added comprehensive debug logging. Changed display name to ComfyUI-VRAM-Manager. See [Release Notes v2.0.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.0.0) for details.
 * **v1.3.1** – Improved SeedVR2 cache detection and messaging. Removed duplicate messages. Clarified that cache_model=False (default) means models are never cached in GlobalModelCache. Added detailed debug information for cache state. See [Release Notes v1.3.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.3.1) for details.
 * **v1.3.0** – Added SeedVR2 model purging support to DisTorchPurgeVRAMV2 node. Fixed 'NoneType' object is not callable errors in cleanup_models(). Fixed CPU device error in virtual memory reset. Improved path detection for SeedVR2 custom node to work across different user environments. See [Release Notes v1.3.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.3.0) for details.
