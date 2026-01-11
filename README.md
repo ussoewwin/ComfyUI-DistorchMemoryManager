@@ -108,6 +108,10 @@ This is a completely original implementation designed specifically for Distorch 
 
 #### Patch Sage Attention DM (New in v2.3.0)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/sa.png" width="400">
+</p>
+
 * **Description**: Experimental node for patching ComfyUI's attention mechanism to use SageAttention
 * **Features**: Replaces ComfyUI's standard attention with SageAttention for improved memory efficiency and performance
 * **Input**: Model (MODEL)
