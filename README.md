@@ -18,6 +18,10 @@ This is a completely original implementation designed specifically for Distorch 
 
 #### Model Patch Memory Cleaner (New in v1.2.0)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/mpatch.png" width="400">
+</p>
+
 * **Description**: Memory cleaner specifically for ModelPatcher loaded model patches
 * **Features**: Clears model patches loaded via ModelPatchLoader to prevent OOM during upscaling
 * **Input**: Any data type (ANY) passthrough
