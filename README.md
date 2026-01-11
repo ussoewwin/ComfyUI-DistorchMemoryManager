@@ -92,10 +92,6 @@ This is a completely original implementation designed specifically for Distorch 
 
 #### Safe Memory Manager (Recommended)
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/mmanager.png" width="400">
-</p>
-
 * **Description**: Safe memory management node
 * **Features**: Completely prevents UI corruption with safe memory management
 * **Input**: Any data type (ANY)
@@ -106,6 +102,10 @@ This is a completely original implementation designed specifically for Distorch 
    * `reset_virtual_memory`: Reset virtual memory
 
 #### Memory Manager (Advanced)
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/mmanager.png" width="400">
+</p>
 
 * **Description**: Comprehensive memory management node (for advanced users)
 * **Features**: Detailed memory management with UI corruption protection
