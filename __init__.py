@@ -8,10 +8,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
 try:
-    from .memory_manager import MemoryManager, SafeMemoryManager, any
+    from .nodes.memory_manager import MemoryManager, SafeMemoryManager, any
 except ImportError:
     try:
-        from memory_manager import MemoryManager, SafeMemoryManager, any
+        from nodes.memory_manager import MemoryManager, SafeMemoryManager, any
     except ImportError:
         MemoryManager = None
         SafeMemoryManager = None
@@ -29,10 +29,10 @@ any = AnyType("*")
 
 # Import Purge VRAM V2 node
 try:
-    from .purge_vram import DisTorchPurgeVRAMV2
+    from .nodes.purge_vram import DisTorchPurgeVRAMV2
 except ImportError:
     try:
-        from purge_vram import DisTorchPurgeVRAMV2
+        from nodes.purge_vram import DisTorchPurgeVRAMV2
     except ImportError:
         DisTorchPurgeVRAMV2 = None
 
@@ -126,10 +126,10 @@ class ModelPatchMemoryCleaner:
 
 # Import SageAttention patch node
 try:
-    from .sa import PatchSageAttentionDM
+    from .nodes.sa import PatchSageAttentionDM
 except ImportError:
     try:
-        from sa import PatchSageAttentionDM
+        from nodes.sa import PatchSageAttentionDM
     except ImportError:
         PatchSageAttentionDM = None
 
