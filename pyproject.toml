@@ -12,5 +12,5 @@ Repository = "https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager"
 [tool.comfy]
 PublisherId = "ussoewwin"
 DisplayName = "ComfyUI-VRAM-Manager"
-Icon = "icon.png"
+Icon = "https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png"
 
