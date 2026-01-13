@@ -1,0 +1,11 @@
+.github/workflows/publish_action.yml
+.gitignore
+LICENSE
+README.md
+__init__.py
+icon.png
+memory_manager.py
+purge_vram.py
+pyproject.toml
+requirements.txt
+sa.py
