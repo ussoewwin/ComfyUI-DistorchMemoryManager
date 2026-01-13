@@ -8,16 +8,15 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
 try:
-    from .nodes.memory_manager import MemoryManager, SafeMemoryManager, any
-    print("[ComfyUI-DistorchMemoryManager] Successfully imported MemoryManager and SafeMemoryManager from .nodes.memory_manager")
+    from .nodes.memory_manager import MemoryManager, any
+    print("[ComfyUI-DistorchMemoryManager] Successfully imported MemoryManager from .nodes.memory_manager")
 except ImportError as e:
     try:
-        from nodes.memory_manager import MemoryManager, SafeMemoryManager, any
-        print("[ComfyUI-DistorchMemoryManager] Successfully imported MemoryManager and SafeMemoryManager from nodes.memory_manager")
+        from nodes.memory_manager import MemoryManager, any
+        print("[ComfyUI-DistorchMemoryManager] Successfully imported MemoryManager from nodes.memory_manager")
     except ImportError as e2:
-        print(f"[ComfyUI-DistorchMemoryManager] WARNING: Failed to import MemoryManager and SafeMemoryManager: {e2}")
+        print(f"[ComfyUI-DistorchMemoryManager] WARNING: Failed to import MemoryManager: {e2}")
         MemoryManager = None
-        SafeMemoryManager = None
         # Fallback: define any locally if import fails
 class AnyType(str):
     """A special class that is always equal in not equal comparisons. Credit to pythongosssss"""
@@ -154,11 +153,6 @@ if MemoryManager is not None:
     print("[ComfyUI-DistorchMemoryManager] Registered MemoryManager node")
 else:
     print("[ComfyUI-DistorchMemoryManager] ERROR: MemoryManager is None, not registered")
-if SafeMemoryManager is not None:
-    NODE_CLASS_MAPPINGS["SafeMemoryManager"] = SafeMemoryManager
-    print("[ComfyUI-DistorchMemoryManager] Registered SafeMemoryManager node")
-else:
-    print("[ComfyUI-DistorchMemoryManager] ERROR: SafeMemoryManager is None, not registered")
 
 # Register Purge VRAM V2 node if available
 if DisTorchPurgeVRAMV2 is not None:
@@ -183,8 +177,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # Register Memory Manager node display names if available
 if MemoryManager is not None:
     NODE_DISPLAY_NAME_MAPPINGS["MemoryManager"] = "Memory Manager"
-if SafeMemoryManager is not None:
-    NODE_DISPLAY_NAME_MAPPINGS["SafeMemoryManager"] = "Safe Memory Manager"
 
 # Register Purge VRAM V2 node display name if available
 if DisTorchPurgeVRAMV2 is not None:

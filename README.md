@@ -14,7 +14,7 @@ This is a completely original implementation designed specifically for Distorch 
 
 ## Features
 
-### Five Node Types
+### Four Node Types
 
 #### Model Patch Memory Cleaner (New in v1.2.0)
 
@@ -89,17 +89,6 @@ This is a completely original implementation designed specifically for Distorch 
   * Improved VRAM release for Nunchaku SDXL models (approximately 2.5GB)
   * Preserves model structure while clearing top-level parameters only
 * **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.2.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing.
-
-#### Safe Memory Manager (Recommended)
-
-* **Description**: Safe memory management node
-* **Features**: Completely prevents UI corruption with safe memory management
-* **Input**: Any data type (ANY)
-* **Output**: Any data type (ANY)
-* **Options**:  
-   * `clean_gpu`: Clear GPU memory  
-   * `force_gc`: Force garbage collection  
-   * `reset_virtual_memory`: Reset virtual memory
 
 #### Memory Manager (Advanced)
 
@@ -186,12 +175,6 @@ pip install -r requirements.txt
 **For general memory management**:
 
 ```
-[Previous Node] → [Safe Memory Manager] → [Next Node]
-```
-
-or
-
-```
 [Previous Node] → [Memory Manager] → [Next Node]
 ```
 
@@ -208,7 +191,7 @@ or
 
 **For video generation (WAN2.2, etc.)**:
 
-* Use **Safe Memory Manager**
+* Use **Memory Manager**
 * `clean_gpu: True`
 * `force_gc: True`
 * `reset_virtual_memory: True`
@@ -225,7 +208,7 @@ or
 **Solution**:
 
 1. For ModelPatchLoader workflows: Use **Model Patch Memory Cleaner** after ControlNet usage
-2. For general workflows: Use **Safe Memory Manager** or **Memory Manager**
+2. For general workflows: Use **Memory Manager**
 3. Enable `clean_gpu` and `reset_virtual_memory`
 4. Enable `force_gc` if needed
 
@@ -243,7 +226,7 @@ or
 
 **Solution**:
 
-1. Use **Safe Memory Manager** (recommended) or **Model Patch Memory Cleaner**
+1. Use **Model Patch Memory Cleaner** or **Memory Manager**
 2. Keep `clean_cpu` disabled (if using Memory Manager)
 3. Enable only essential options
 
@@ -323,7 +306,7 @@ Bug reports and feature requests are welcome on the GitHub Issues page.
 
 ## Release History
 
-* **v2.3.3** – Fixed import paths for nodes in `nodes/` directory. All four nodes (Memory Manager, Safe Memory Manager, Purge VRAM V2, Patch Sage Attention DM) are now correctly registered and displayed in ComfyUI. Resolves [Issue #3](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/issues/3). See [Release Notes v2.3.3](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.3) for details.
+* **v2.3.3** – Fixed import paths for nodes in `nodes/` directory. All nodes (Memory Manager, Purge VRAM V2, Patch Sage Attention DM, Model Patch Memory Cleaner) are now correctly registered and displayed in ComfyUI. Resolves [Issue #3](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/issues/3). See [Release Notes v2.3.3](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.3) for details.
 * **v2.3.0** – Added Patch Sage Attention DM node for patching ComfyUI's attention mechanism to use SageAttention. Supports multiple SageAttention implementations (auto, CUDA, Triton, SageAttention 3) with dynamic patching via ComfyUI's callback system. Added independent version detection for Flash-Attention and SageAttention (completely independent from model_management module). Flash-Attention auto-load feature when disabled (no CLI options required). Automatically detects and logs SageAttention version with CUDA/PyTorch information, and Flash-Attention version with FA-2/FA-3 type detection. Version information is logged on every generation. Compatible with ComfyUI's attention function format. See [Release Notes v2.3.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.0) for details.
 * **v2.2.0** – Added Patch Sage Attention DM node for patching ComfyUI's attention mechanism to use SageAttention. Supports multiple SageAttention implementations (auto, CUDA, Triton, SageAttention 3) with dynamic patching via ComfyUI's callback system. Automatically detects and logs SageAttention version with CUDA/PyTorch information. Compatible with ComfyUI's attention function format. See [Release Notes v2.2.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.2.0) for details.
 * **v2.0.0** – Added Qwen3-VL and Nunchaku model purging support to DisTorchPurgeVRAMV2 node. Qwen3-VL models can now be purged from GPU memory with device_map="auto" support. Nunchaku models (FLUX/Z-Image/Qwen-Image) can be purged with CPU offload handling. Enhanced CUDA cache clearing to support all devices. Fixed any() function name collision with AnyType. Added comprehensive debug logging. Changed display name to ComfyUI-VRAM-Manager. See [Release Notes v2.0.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.0.0) for details.
