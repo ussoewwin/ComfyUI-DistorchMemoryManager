@@ -860,7 +860,7 @@ class DisTorchPurgeVRAMV2:
                     except ImportError:
                         # Try alternative import paths
                         try:
-                            import sys
+                            # sys is already imported at module level
                             for module_name in list(sys.modules.keys()):
                                 if 'nunchaku' in module_name.lower() and 'sdxl' in module_name.lower():
                                     module = sys.modules[module_name]
