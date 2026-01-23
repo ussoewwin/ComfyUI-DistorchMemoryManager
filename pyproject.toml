@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI-DistorchMemoryManager"
-version = "2.3.5"
+version = "2.3.6"
 description = "An independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, and Nunchaku models (FLUX/Z-Image/Qwen-Image). Includes Model Patch Memory Cleaner for ModelPatchLoader workflows."
 authors = [{ name = "ussoewwin" }]
 license = { file = "LICENSE" }
