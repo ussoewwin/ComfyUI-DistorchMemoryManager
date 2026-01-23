@@ -99,6 +99,32 @@ def get_sage_attention_info():
     return sage_version, cuda_version, torch_version
 
 
+# SageAttention3 version detection (independent from model_management)
+def get_sage_attention3_info():
+    """
+    Get SageAttention3 version information.
+    Returns: (version, is_available, supports_blackwell)
+    """
+    sage3_version = None
+    is_available = False
+    supports_blackwell = False
+    
+    try:
+        from sageattn3.blackwell import __version__ as blackwell_version
+        sage3_version = blackwell_version
+        is_available = True
+        supports_blackwell = True
+    except ImportError:
+        try:
+            import sageattn3
+            sage3_version = "unknown"
+            is_available = True
+        except ImportError:
+            pass
+    
+    return sage3_version, is_available, supports_blackwell
+
+
 # Check if Flash-Attention is enabled (independent from model_management)
 def is_flash_attention_enabled():
     """
@@ -122,16 +148,18 @@ def is_flash_attention_enabled():
     return False
 
 def get_sage_func_dm(sage_attention, allow_compile=False):
-    # Detect SageAttention version using our own function
-    sage_version, cuda_version, torch_version = get_sage_attention_info()
-    
-    if sage_version and sage_version != "unknown":
-        if cuda_version != "unknown" and torch_version != "unknown":
-            logging.info(f"Patching comfy attention to use SageAttention {sage_version}+cu{cuda_version}torch{torch_version}")
+    # SA3 uses separate logging, so only log SA2 info for non-SA3 modes
+    if "sageattn3" not in sage_attention:
+        # Detect SageAttention version using our own function
+        sage_version, cuda_version, torch_version = get_sage_attention_info()
+        
+        if sage_version and sage_version != "unknown":
+            if cuda_version != "unknown" and torch_version != "unknown":
+                logging.info(f"Patching comfy attention to use SageAttention {sage_version}+cu{cuda_version}torch{torch_version}")
+            else:
+                logging.info(f"Patching comfy attention to use SageAttention {sage_version}")
         else:
-            logging.info(f"Patching comfy attention to use SageAttention {sage_version}")
-    else:
-        logging.info("Patching comfy attention to use sageattn")
+            logging.info("Patching comfy attention to use sageattn")
     
     from sageattention import sageattn
     if sage_attention == "auto":
@@ -154,10 +182,41 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
         def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
             return sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32+fp16", tensor_layout=tensor_layout)
     elif "sageattn3" in sage_attention:
+        # SA3-specific version detection and logging
+        sage3_version, sa3_available, supports_blackwell = get_sage_attention3_info()
+        if sage3_version and sage3_version != "unknown":
+            logging.info(f"Patching comfy attention to use SageAttention3 {sage3_version} (Blackwell FP4)")
+        else:
+            logging.info("Patching comfy attention to use SageAttention3 (Blackwell FP4)")
+        
         from sageattn3 import sageattn3_blackwell
+        from torch.nn.functional import scaled_dot_product_attention as sdpa
+        
         def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", **kwargs):
-            q, k, v = [x.transpose(1, 2) if tensor_layout == "NHD" else x for x in (q, k, v)]
-            out = sageattn3_blackwell(q, k, v, is_causal=is_causal, attn_mask=attn_mask, per_block_mean=(sage_attention == "sageattn3_per_block_mean"))
+            # Convert NHD -> HND layout (SA3 expects HND: [batch, heads, seq_len, dim])
+            if tensor_layout == "NHD":
+                q_s, k_s, v_s = [x.transpose(1, 2) for x in (q, k, v)]
+            else:
+                q_s, k_s, v_s = q, k, v
+            
+            # SA3 constraints check - fallback to SDPA if needed
+            # 1. SA3 does not support attention mask
+            # 2. SA3 does not support headdim >= 256
+            use_fallback = False
+            if attn_mask is not None:
+                use_fallback = True
+            if q_s.size(-1) >= 256:
+                use_fallback = True
+            
+            if use_fallback:
+                out = sdpa(q_s, k_s, v_s, attn_mask=attn_mask, is_causal=is_causal)
+            else:
+                out = sageattn3_blackwell(
+                    q_s, k_s, v_s,
+                    is_causal=is_causal,
+                    per_block_mean=(sage_attention == "sageattn3_per_block_mean")
+                )
+            
             return out.transpose(1, 2) if tensor_layout == "NHD" else out
 
     if not allow_compile:

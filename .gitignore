@@ -42,3 +42,6 @@ Thumbs.db
 # Release notes (managed via GitHub releases)
 release_notes_*.md
 
+# Documentation folder
+md/
+
