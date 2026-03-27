@@ -16,6 +16,7 @@ except Exception:
 
 # SageAttention modes
 sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
+_logged_sage_fallback_messages = set()
 
 
 # Flash-Attention version detection (independent from model_management)
@@ -238,6 +239,7 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
                 (q, k, v),
             )
             tensor_layout="NHD"
+
         if mask is not None:
             # add a batch dimension if there isn't already one
             if mask.ndim == 2:
@@ -245,7 +247,32 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
             # add a heads dimension if there isn't already one
             if mask.ndim == 3:
                 mask = mask.unsqueeze(1)
-        out = sage_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout).to(in_dtype)
+        use_pytorch_fallback = False
+        try:
+            out = sage_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout).to(in_dtype)
+        except Exception as e:
+            # Keep this suppression narrowly scoped so only the known SD1.5-style
+            # unsupported head_dim=160 error is silenced.
+            if "Unsupported head_dim: 160" in str(e):
+                msg_key = "unsupported_head_dim_160"
+                if msg_key not in _logged_sage_fallback_messages:
+                    logging.info("SageAttention head_dim=160 is unsupported; using pytorch attention fallback.")
+                    _logged_sage_fallback_messages.add(msg_key)
+            else:
+                logging.error("Error running sage attention: {}, using pytorch attention instead.".format(e))
+            use_pytorch_fallback = True
+
+        if use_pytorch_fallback:
+            if tensor_layout == "NHD":
+                q, k, v = map(lambda t: t.transpose(1, 2), (q, k, v))
+            return comfy_attention.attention_pytorch(
+                q, k, v, heads,
+                mask=mask,
+                skip_reshape=True,
+                skip_output_reshape=skip_output_reshape,
+                **kwargs
+            ).to(in_dtype)
+
         if tensor_layout == "HND":
             if not skip_output_reshape:
                 out = (

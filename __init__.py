@@ -2,9 +2,107 @@ import sys
 import os
 import torch
 import gc
+import logging
 
 # Ensure ComfyUI root is on sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+_SAGE160_LOGGED = set()
+
+
+def _install_sage_attention_noise_guard():
+    """
+    External runtime patch:
+    suppress repeated unsupported head_dim=160 sage-attention errors
+    without editing ComfyUI core files.
+    """
+    global _SAGE160_LOGGED
+
+    try:
+        from comfy.ldm.modules import attention as comfy_attention
+    except Exception as e:
+        print(f"[ComfyUI-DistorchMemoryManager] WARNING: failed to import attention module for patch: {e}")
+        return
+
+    original_wrapped = getattr(comfy_attention, "attention_sage", None)
+    if original_wrapped is None:
+        print("[ComfyUI-DistorchMemoryManager] WARNING: attention_sage not found; skip patch")
+        return
+
+    if getattr(original_wrapped, "_dm_sage160_guard", False):
+        return
+
+    @comfy_attention.wrap_attn
+    def attention_sage_guarded(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
+        if kwargs.get("low_precision_attention", True) is False:
+            return comfy_attention.attention_pytorch(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
+
+        exception_fallback = False
+        if skip_reshape:
+            b, _, _, dim_head = q.shape
+            tensor_layout = "HND"
+        else:
+            b, _, dim_head = q.shape
+            dim_head //= heads
+            q, k, v = map(
+                lambda t: t.view(b, -1, heads, dim_head),
+                (q, k, v),
+            )
+            tensor_layout = "NHD"
+
+        if mask is not None:
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            if mask.ndim == 3:
+                mask = mask.unsqueeze(1)
+
+        try:
+            out = comfy_attention.sageattn(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout)
+        except Exception as e:
+            err = str(e)
+            if "Unsupported head_dim: 160" in err:
+                if "unsupported_head_dim_160" not in _SAGE160_LOGGED:
+                    logging.info("Sage attention unsupported for head_dim=160; using pytorch attention fallback.")
+                    _SAGE160_LOGGED.add("unsupported_head_dim_160")
+            else:
+                logging.error("Error running sage attention: {}, using pytorch attention instead.".format(e))
+            exception_fallback = True
+
+        if exception_fallback:
+            if tensor_layout == "NHD":
+                q, k, v = map(
+                    lambda t: t.transpose(1, 2),
+                    (q, k, v),
+                )
+            return comfy_attention.attention_pytorch(q, k, v, heads, mask=mask, skip_reshape=True, skip_output_reshape=skip_output_reshape, **kwargs)
+
+        if tensor_layout == "HND":
+            if not skip_output_reshape:
+                out = (
+                    out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+                )
+        else:
+            if skip_output_reshape:
+                out = out.transpose(1, 2)
+            else:
+                out = out.reshape(b, -1, heads * dim_head)
+        return out
+
+    attention_sage_guarded._dm_sage160_guard = True
+    comfy_attention.attention_sage = attention_sage_guarded
+
+    if getattr(comfy_attention, "optimized_attention", None) is original_wrapped:
+        comfy_attention.optimized_attention = attention_sage_guarded
+    if getattr(comfy_attention, "optimized_attention_masked", None) is original_wrapped:
+        comfy_attention.optimized_attention_masked = attention_sage_guarded
+    if hasattr(comfy_attention, "REGISTERED_ATTENTION_FUNCTIONS"):
+        if comfy_attention.REGISTERED_ATTENTION_FUNCTIONS.get("sage") is original_wrapped:
+            comfy_attention.REGISTERED_ATTENTION_FUNCTIONS["sage"] = attention_sage_guarded
+
+    print("[ComfyUI-DistorchMemoryManager] Installed external sage-attention head_dim=160 noise guard")
+
+
+_install_sage_attention_noise_guard()
 
 # Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
 try:
