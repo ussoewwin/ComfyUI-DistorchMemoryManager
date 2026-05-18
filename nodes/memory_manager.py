@@ -1,9 +1,5 @@
 """
 Memory Manager nodes for DistorchMemoryManager
-
-Reserved VRAM auto-detection based on ComfyUI-ReservedVRAM by Windecay
-https://github.com/Windecay/ComfyUI-ReservedVRAM
-Original code licensed under Apache License 2.0
 """
 import torch
 import gc

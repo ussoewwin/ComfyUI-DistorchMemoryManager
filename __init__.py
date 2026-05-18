@@ -109,8 +109,6 @@ def _install_general_vram_management():
     """
     Startup patch: auto-detect non-PyTorch VRAM usage (browsers, other apps)
     via NVML and patch comfy.model_management.EXTRA_RESERVED_VRAM at load time.
-
-    Based on ComfyUI-ReservedVRAM by Windecay (Apache-2.0).
     """
     try:
         import pynvml
