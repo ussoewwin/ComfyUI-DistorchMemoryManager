@@ -4,7 +4,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, and Nunchaku models (FLUX/Z-Image/Qwen-Image). Includes Model Patch Memory Cleaner for ModelPatchLoader workflows.
+**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, and Nunchaku models (FLUX/Z-Image/Qwen-Image). Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
 
 ## Overview
 
@@ -97,7 +97,7 @@ This is a completely original implementation designed specifically for Distorch 
 </p>
 
 * **Description**: Comprehensive memory management node (for advanced users)
-* **Features**: Detailed memory management with UI corruption protection
+* **Features**: Detailed memory management with UI corruption protection and general VRAM management
 * **Input**: Any data type (ANY)
 * **Output**: Any data type (ANY)
 * **Options**:  
@@ -106,6 +106,7 @@ This is a completely original implementation designed specifically for Distorch 
    * `force_gc`: Force garbage collection  
    * `reset_virtual_memory`: Reset virtual memory  
    * `restore_original_functions`: Restore original functions
+   * `general_manage_vram`: General VRAM management (v2.4.0) – Auto-detects non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) via NVML and adjusts ComfyUI memory management accordingly. Prevents OOM errors caused by external GPU processes that PyTorch cannot see. Requires `nvidia-ml-py`.
 
 #### Patch Sage Attention DM (New in v2.3.0)
 
@@ -295,6 +296,7 @@ pip install -r requirements.txt
 * For Qwen3-VL workflows: Use DisTorchPurgeVRAMV2 with `purge_qwen3vl_models: True` after Qwen3-VL model usage to prevent OOM. The node automatically handles device_map="auto" case for models distributed across multiple devices.
 * For Nunchaku workflows (FLUX/Z-Image/Qwen-Image/SDXL): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()). For Nunchaku SDXL models (v2.2.0), the node now includes cache clearing functionality that can release approximately 2.5GB of VRAM.
 * For SageAttention workflows (v2.3.0): Use Patch Sage Attention DM node to replace ComfyUI's attention mechanism with SageAttention for improved memory efficiency and performance. The node supports multiple SageAttention implementations and automatically patches attention on each model execution. To disable SageAttention, run the node again with `sage_attention` set to `disabled`.
+* For multi-process environments (v2.4.0): Enable `general_manage_vram` in the Memory Manager node. This uses NVML to detect VRAM consumed by non-PyTorch processes (browsers, Discord, OBS, etc.) and automatically informs ComfyUI to account for it, preventing OOM errors that occur when ComfyUI overestimates available VRAM.
 
 ## License
 

@@ -1,2 +1,3 @@
 torch>=1.12.0
-psutil>=5.8.0 
+psutil>=5.8.0
+nvidia-ml-py
