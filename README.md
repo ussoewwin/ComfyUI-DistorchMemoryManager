@@ -22,6 +22,11 @@ This is a completely original implementation designed specifically for Distorch 
 
 * **Description**: A fully automated, GPU-wide VRAM headroom optimizer that runs seamlessly at ComfyUI startup. It automatically detects system-wide non-PyTorch VRAM usage (browsers, Discord, OBS, desktop window managers) via NVML and dynamically configures ComfyUI's VRAM management on load.
 
+##### The Core Limitation of Standard ComfyUI
+* **PyTorch-Only Blind Spot**: By default, **ComfyUI can only recognize active VRAM allocations made within the PyTorch framework itself.**
+* **The Problem**: Standard ComfyUI is completely blind to physical VRAM consumed by external, non-PyTorch applications (such as web browsers, Discord, OBS, or desktop window managers). Because it cannot detect this external overhead, ComfyUI often overestimates available VRAM, resulting in sudden Out-Of-Memory (OOM) crashes when attempting to load heavy models.
+* **The Solution**: This startup patch uses NVML to query the absolute physical VRAM usage of the GPU, calculating the exact difference between system-wide consumption and PyTorch's active memory. It then overrides ComfyUI's headroom limit (`General Manage VRAM`) with this real-world value to guarantee multi-process memory safety.
+
 ##### Key Benefits & Features
 * **Zero Node Setup**: Operates entirely in the background at startup. No node placement in workflows, manual connections, or toggle switches are required.
 * **NVML-Powered Accuracy**: Utilizes the `pynvml` (NVIDIA Management Library) API to query real-time physical GPU memory status, ensuring perfect accuracy.
