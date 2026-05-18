@@ -106,7 +106,19 @@ This is a completely original implementation designed specifically for Distorch 
    * `force_gc`: Force garbage collection  
    * `reset_virtual_memory`: Reset virtual memory
    * `restore_original_functions`: Restore original functions
-   * **Note on VRAM Management (v2.4.0)**: Non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) is now **automatically detected via NVML at startup** and applied to ComfyUI's memory management (General Manage VRAM). No node setup is required.
+
+#### General Manage VRAM (Startup Automatic Patch - New in v2.4.0)
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/generalvram.png" width="600">
+</p>
+
+* **Description**: GPU-wide automated VRAM management patch executed automatically at ComfyUI startup.
+* **Features**:
+  * **Zero Node Required**: Runs completely in the background at startup—no manual node placement, connections, or toggle switches are needed.
+  * **NVML-Powered Detection**: Auto-detects real-time system VRAM consumption from non-PyTorch processes (web browsers, Discord, OBS, video players, etc.).
+  * **Dynamic ComfyUI Integration**: Dynamically patches ComfyUI's VRAM headroom limit (General Manage VRAM) on load by calculating the exact difference between system-wide GPU usage and PyTorch allocations.
+  * **Robust OOM Prevention**: Prevents catastrophic multi-process OOM crashes by ensuring ComfyUI is always aware of the exact VRAM headroom currently occupied by other software.
 
 #### Patch Sage Attention DM (New in v2.3.0)
 
