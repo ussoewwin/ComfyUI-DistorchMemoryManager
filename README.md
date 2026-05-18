@@ -14,6 +14,24 @@ This is a completely original implementation designed specifically for Distorch 
 
 ## Features
 
+### General Manage VRAM (Startup Automatic Patch - New in v2.4.0)
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/generalvram.png" width="600">
+</p>
+
+* **Description**: A fully automated, GPU-wide VRAM headroom optimizer that runs seamlessly at ComfyUI startup. It automatically detects system-wide non-PyTorch VRAM usage (browsers, Discord, OBS, desktop window managers) via NVML and dynamically configures ComfyUI's VRAM management on load.
+
+##### Key Benefits & Features
+* **Zero Node Setup**: Operates entirely in the background at startup. No node placement in workflows, manual connections, or toggle switches are required.
+* **NVML-Powered Accuracy**: Utilizes the `pynvml` (NVIDIA Management Library) API to query real-time physical GPU memory status, ensuring perfect accuracy.
+* **Robust Multi-Process OOM Prevention**: Dynamically patches ComfyUI's internal VRAM headroom buffer on load by calculating the exact difference between system-wide physical GPU usage and PyTorch allocations.
+* **Optimized for iGPU/dGPU Multi-GPU Setups**:
+  * Perfect for setups that offload Windows desktop rendering and browser acceleration to the CPU's integrated graphics (e.g., Ryzen 9 7900 built-in Radeon iGPU) and reserve the RTX GPU exclusively for CUDA workloads.
+  * The startup patch detects extremely low non-PyTorch overhead (e.g., `0.02 GB`), automatically shrinking the reserved chunk down from the default `0.68 GB` to `0.02 GB` to maximize ComfyUI's available memory.
+
+---
+
 ### Four Node Types
 
 #### Model Patch Memory Cleaner (New in v1.2.0)
@@ -106,22 +124,6 @@ This is a completely original implementation designed specifically for Distorch 
    * `force_gc`: Force garbage collection  
    * `reset_virtual_memory`: Reset virtual memory
    * `restore_original_functions`: Restore original functions
-
-#### General Manage VRAM (Startup Automatic Patch - New in v2.4.0)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/generalvram.png" width="600">
-</p>
-
-* **Description**: A fully automated, GPU-wide VRAM headroom optimizer that runs seamlessly at ComfyUI startup. It automatically detects non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) via NVML and dynamically applies the optimal headroom value (`General Manage VRAM`) on load.
-
-##### Key Benefits & Features
-* **Zero Node Setup**: Operates entirely in the background at startup. No node placement in workflows, manual connections, or toggle switches are required.
-* **NVML-Powered Accuracy**: Utilizes the `pynvml` (NVIDIA Management Library) API to query real-time physical GPU memory status, ensuring perfect accuracy.
-* **Robust Multi-Process OOM Prevention**: Dynamically patches ComfyUI's internal VRAM headroom buffer on load by calculating the exact difference between system-wide physical GPU usage and PyTorch allocations.
-* **Optimized for iGPU/dGPU Multi-GPU Setups**:
-  * Perfect for setups that offload Windows desktop rendering and browser acceleration to the CPU's integrated graphics (e.g., Ryzen 9 7900 built-in Radeon iGPU) and reserve the RTX GPU exclusively for CUDA workloads.
-  * The startup patch detects extremely low non-PyTorch overhead (e.g., `0.02 GB`), automatically shrinking the reserved chunk down from the default `0.68 GB` to `0.02 GB` to maximize ComfyUI's available memory.
 
 #### Patch Sage Attention DM (New in v2.3.0)
 
