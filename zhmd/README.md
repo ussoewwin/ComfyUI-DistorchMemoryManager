@@ -337,7 +337,7 @@ Apache License 2.0 — 详见 LICENSE 文件
 
 ## 发行历史
 
-详见 [CHANGELOG.md](../changelog/changelog.md)。
+详见 [CHANGELOG.md](changelog/changelog.md)。
 
 ## 关于
 
