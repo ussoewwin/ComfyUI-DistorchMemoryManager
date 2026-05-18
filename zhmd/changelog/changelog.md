@@ -7,7 +7,7 @@
   </tr>
 </table>
 
-* **v2.4.0** – 新增在 ComfyUI 启动时执行的 GPU 全局 VRAM 管理自动补丁。通过 NVML 自动检测非 PyTorch 的 VRAM 占用（浏览器、Discord、OBS 等），并在加载时动态调整 ComfyUI 的显存管理（General Manage VRAM）。可避免 PyTorch 无法感知的外部 GPU 进程导致的 OOM，保障系统级显存安全。新增 `nvidia-ml-py` 依赖。详见 [Release Notes v2.4.0](../v240_complete_guide.md)。详见 [Release Notes v2.4.0](../v240_complete_guide.md)。
+* **v2.4.0** – 新增在 ComfyUI 启动时执行的 GPU 全局 VRAM 管理自动补丁。通过 NVML 自动检测非 PyTorch 的 VRAM 占用（浏览器、Discord、OBS 等），并在加载时动态调整 ComfyUI 的显存管理（General Manage VRAM）。可避免 PyTorch 无法感知的外部 GPU 进程导致的 OOM，保障系统级显存安全。新增 `nvidia-ml-py` 依赖。详见 [Release Notes v2.4.0](../v240_complete_guide.md)。
 * **v2.3.8** – 技术文档：说明在 PyTorch 2.11.0 下使用 ComfyUI 时的 Flash Attention-2 相关问题，包括故障现象与环境约束。详见 [Release Notes v2.3.8](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.8)。
 * **v2.3.7** – 为已知的 `Unsupported head_dim: 160` 回退路径增加外部运行时 SageAttention 噪声防护，减少重复错误日志刷屏，并将补丁文档限定为仅描述本仓库范围内的变更。详见 [Release Notes v2.3.7](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.7)。
 * **v2.3.6** – 增强 Patch Sage Attention DM 节点中的 SageAttention3（SA3）集成。新增 SA3 专用版本检测函数（`get_sage_attention3_info()`），支持 Blackwell 检测。改进 SA3 实现：张量布局转换（NHD 至 HND）、约束处理（headdim >= 256、attention mask 支持）。当不满足 SA3 约束时自动回退至 PyTorch SDPA。修复在选择 SA3 模式时仍输出 SA2 版本日志的问题。支持 `sageattn3` 与 `sageattn3_per_block_mean` 模式及正确的 per-block mean 处理。详见 [Release Notes v2.3.6](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.6)。
