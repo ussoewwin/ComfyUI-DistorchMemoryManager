@@ -113,12 +113,44 @@ This is a completely original implementation designed specifically for Distorch 
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/generalvram.png" width="600">
 </p>
 
-* **Description**: GPU-wide automated VRAM management patch executed automatically at ComfyUI startup.
-* **Features**:
-  * **Zero Node Required**: Runs completely in the background at startup—no manual node placement, connections, or toggle switches are needed.
-  * **NVML-Powered Detection**: Auto-detects real-time system VRAM consumption from non-PyTorch processes (web browsers, Discord, OBS, video players, etc.).
-  * **Dynamic ComfyUI Integration**: Dynamically patches ComfyUI's VRAM headroom limit (General Manage VRAM) on load by calculating the exact difference between system-wide GPU usage and PyTorch allocations.
-  * **Robust OOM Prevention**: Prevents catastrophic multi-process OOM crashes by ensuring ComfyUI is always aware of the exact VRAM headroom currently occupied by other software.
+* **Description**: A fully automated, GPU-wide VRAM headroom optimizer that runs seamlessly at ComfyUI startup. It detects VRAM consumption from external non-PyTorch applications (like web browsers, Discord, OBS, and desktop window managers) and dynamically configures ComfyUI's VRAM management.
+
+##### Key Benefits & Features
+* **Zero Node Setup**: Operates entirely in the background at startup. No node placement in workflows, manual connections, or toggle switches are required.
+* **NVML-Powered Accuracy**: Utilizes the `pynvml` (NVIDIA Management Library) API to query real-time physical GPU memory status, ensuring perfect accuracy.
+* **Robust Multi-Process OOM Prevention**: Dynamically patches ComfyUI's internal VRAM headroom buffer (General Manage VRAM) on load by calculating the exact difference between the system-wide physical GPU usage and PyTorch's active memory allocation.
+* **Optimized for iGPU/dGPU Multi-GPU Setups**:
+  * If you offload Windows desktop rendering, browsers, and general apps to your CPU's integrated graphics (e.g., Ryzen 9 7900 built-in Radeon iGPU) and reserve your RTX GPU exclusively for CUDA workloads:
+  * The startup patch detects that non-PyTorch usage on your RTX dGPU is extremely low (e.g., `0.02 GB` of driver overhead).
+  * Rather than locking up a large default VRAM chunk, the patch instantly shrinks the reserved overhead from default `0.68 GB` to `0.02 GB`, giving ComfyUI the maximum possible VRAM allocation for model execution.
+
+##### How It Works (Calculation Logic)
+```
+[System-Wide Physical VRAM Used (NVML)] 
+                  - 
+       [PyTorch Allocated VRAM] 
+                  = 
+   [Non-PyTorch Used (Browsers, OBS, etc.)] ──> Overwrites ComfyUI's VRAM Headroom
+```
+
+##### Startup Log Explanation
+When ComfyUI boots, you will see a detailed execution log similar to this:
+```text
+[ComfyUI-VRAM-Manager] ── Startup VRAM Patch ──
+[ComfyUI-VRAM-Manager]   GPU: NVIDIA GeForce RTX 5060 Ti
+[ComfyUI-VRAM-Manager]   VRAM Total:          15.93 GB
+[ComfyUI-VRAM-Manager]   System-wide used:    1.13 GB  (NVML)
+[ComfyUI-VRAM-Manager]   PyTorch used:        1.11 GB
+[ComfyUI-VRAM-Manager]   Non-PyTorch used:    0.02 GB  (browsers, other apps)
+[ComfyUI-VRAM-Manager]   General Manage VRAM: 0.68 GB → 0.02 GB
+[ComfyUI-VRAM-Manager] ── Patch applied ──
+```
+
+* **VRAM Total**: Total physical VRAM available on the selected NVIDIA GPU.
+* **System-wide used (NVML)**: Real-time total physical memory consumed by all active processes on this GPU.
+* **PyTorch used**: Memory allocated or reserved by PyTorch itself at boot time.
+* **Non-PyTorch used**: VRAM allocated by software other than PyTorch (`System-wide used` minus `PyTorch used`).
+* **General Manage VRAM**: Shows the transition of ComfyUI's VRAM headroom limit. In the log above, it successfully optimized the buffer from the default `0.68 GB` down to `0.02 GB`, maximizing available generation memory.
 
 #### Patch Sage Attention DM (New in v2.3.0)
 
