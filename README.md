@@ -106,7 +106,7 @@ This is a completely original implementation designed specifically for Distorch 
    * `force_gc`: Force garbage collection  
    * `reset_virtual_memory`: Reset virtual memory
    * `restore_original_functions`: Restore original functions
-   * **Note on VRAM Management (v2.4.0)**: Non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) is now **automatically detected via NVML at startup** and applied to ComfyUI's memory management (`EXTRA_RESERVED_VRAM`). No node setup is required.
+   * **Note on VRAM Management (v2.4.0)**: Non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) is now **automatically detected via NVML at startup** and applied to ComfyUI's memory management (General Manage VRAM). No node setup is required.
 
 #### Patch Sage Attention DM (New in v2.3.0)
 
@@ -296,7 +296,7 @@ pip install -r requirements.txt
 * For Qwen3-VL workflows: Use DisTorchPurgeVRAMV2 with `purge_qwen3vl_models: True` after Qwen3-VL model usage to prevent OOM. The node automatically handles device_map="auto" case for models distributed across multiple devices.
 * For Nunchaku workflows (FLUX/Z-Image/Qwen-Image/SDXL): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()). For Nunchaku SDXL models (v2.2.0), the node now includes cache clearing functionality that can release approximately 2.5GB of VRAM.
 * For SageAttention workflows (v2.3.0): Use Patch Sage Attention DM node to replace ComfyUI's attention mechanism with SageAttention for improved memory efficiency and performance. The node supports multiple SageAttention implementations and automatically patches attention on each model execution. To disable SageAttention, run the node again with `sage_attention` set to `disabled`.
-* **For multi-process environments (v2.4.0)**: Non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) is now **automatically detected via NVML at startup** and dynamically applied to ComfyUI's memory management (`EXTRA_RESERVED_VRAM`). This prevents OOM errors that occur when ComfyUI overestimates available VRAM, ensuring system-wide memory safety without requiring any manual node configuration.
+* **For multi-process environments (v2.4.0)**: Non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) is now **automatically detected via NVML at startup** and dynamically applied to ComfyUI's memory management (General Manage VRAM). This prevents OOM errors that occur when ComfyUI overestimates available VRAM, ensuring system-wide memory safety without requiring any manual node configuration.
 
 ## License
 

@@ -108,7 +108,7 @@ _install_sage_attention_noise_guard()
 def _install_general_vram_management():
     """
     Startup patch: auto-detect non-PyTorch VRAM usage (browsers, other apps)
-    via NVML and patch comfy.model_management.EXTRA_RESERVED_VRAM at load time.
+    via NVML and apply general manage VRAM patch to ComfyUI memory management at load time.
     """
     try:
         import pynvml
@@ -139,7 +139,7 @@ def _install_general_vram_management():
         non_torch = max(0, system_used - torch_used)
 
         import comfy.model_management as mm
-        original_reserved = getattr(mm, "EXTRA_RESERVED_VRAM", 0)
+        original_general_manage_vram = getattr(mm, "EXTRA_RESERVED_VRAM", 0)
         mm.EXTRA_RESERVED_VRAM = non_torch
 
         # Detailed startup log
@@ -150,7 +150,7 @@ def _install_general_vram_management():
         print(f"[ComfyUI-VRAM-Manager]   System-wide used:    {to_gb(system_used):.2f} GB  (NVML)")
         print(f"[ComfyUI-VRAM-Manager]   PyTorch used:        {to_gb(torch_used):.2f} GB")
         print(f"[ComfyUI-VRAM-Manager]   Non-PyTorch used:    {to_gb(non_torch):.2f} GB  (browsers, other apps)")
-        print(f"[ComfyUI-VRAM-Manager]   EXTRA_RESERVED_VRAM: {to_gb(original_reserved):.2f} GB → {to_gb(non_torch):.2f} GB")
+        print(f"[ComfyUI-VRAM-Manager]   General Manage VRAM: {to_gb(original_general_manage_vram):.2f} GB → {to_gb(non_torch):.2f} GB")
         print(f"[ComfyUI-VRAM-Manager] ── Patch applied ──")
     except Exception as e:
         print(f"[ComfyUI-VRAM-Manager] Startup patch error: {e}")
