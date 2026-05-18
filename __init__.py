@@ -21,12 +21,12 @@ def _install_sage_attention_noise_guard():
     try:
         from comfy.ldm.modules import attention as comfy_attention
     except Exception as e:
-        print(f"[ComfyUI-DistorchMemoryManager] WARNING: failed to import attention module for patch: {e}")
+        print(f"[ComfyUI-VRAM-Manager] WARNING: failed to import attention module for patch: {e}")
         return
 
     original_wrapped = getattr(comfy_attention, "attention_sage", None)
     if original_wrapped is None:
-        print("[ComfyUI-DistorchMemoryManager] WARNING: attention_sage not found; skip patch")
+        print("[ComfyUI-VRAM-Manager] WARNING: attention_sage not found; skip patch")
         return
 
     if getattr(original_wrapped, "_dm_sage160_guard", False):
@@ -99,7 +99,7 @@ def _install_sage_attention_noise_guard():
         if comfy_attention.REGISTERED_ATTENTION_FUNCTIONS.get("sage") is original_wrapped:
             comfy_attention.REGISTERED_ATTENTION_FUNCTIONS["sage"] = attention_sage_guarded
 
-    print("[ComfyUI-DistorchMemoryManager] Installed external sage-attention head_dim=160 noise guard")
+    print("[ComfyUI-VRAM-Manager] Installed external sage-attention head_dim=160 noise guard")
 
 
 _install_sage_attention_noise_guard()
@@ -161,13 +161,13 @@ _install_general_vram_management()
 # Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
 try:
     from .nodes.memory_manager import MemoryManager, any
-    print("[ComfyUI-DistorchMemoryManager] Successfully imported MemoryManager from .nodes.memory_manager")
+    print("[ComfyUI-VRAM-Manager] Successfully imported MemoryManager from .nodes.memory_manager")
 except ImportError as e:
     try:
         from nodes.memory_manager import MemoryManager, any
-        print("[ComfyUI-DistorchMemoryManager] Successfully imported MemoryManager from nodes.memory_manager")
+        print("[ComfyUI-VRAM-Manager] Successfully imported MemoryManager from nodes.memory_manager")
     except ImportError as e2:
-        print(f"[ComfyUI-DistorchMemoryManager] WARNING: Failed to import MemoryManager: {e2}")
+        print(f"[ComfyUI-VRAM-Manager] WARNING: Failed to import MemoryManager: {e2}")
         MemoryManager = None
         # Fallback: define any locally if import fails
 class AnyType(str):
@@ -184,13 +184,13 @@ any = AnyType("*")
 # Import Purge VRAM V2 node
 try:
     from .nodes.purge_vram import DisTorchPurgeVRAMV2
-    print("[ComfyUI-DistorchMemoryManager] Successfully imported DisTorchPurgeVRAMV2 from .nodes.purge_vram")
+    print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .nodes.purge_vram")
 except ImportError as e:
     try:
         from nodes.purge_vram import DisTorchPurgeVRAMV2
-        print("[ComfyUI-DistorchMemoryManager] Successfully imported DisTorchPurgeVRAMV2 from nodes.purge_vram")
+        print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from nodes.purge_vram")
     except ImportError as e2:
-        print(f"[ComfyUI-DistorchMemoryManager] WARNING: Failed to import DisTorchPurgeVRAMV2: {e2}")
+        print(f"[ComfyUI-VRAM-Manager] WARNING: Failed to import DisTorchPurgeVRAMV2: {e2}")
         DisTorchPurgeVRAMV2 = None
 
 
@@ -284,13 +284,13 @@ class ModelPatchMemoryCleaner:
 # Import SageAttention patch node
 try:
     from .nodes.sa import PatchSageAttentionDM
-    print("[ComfyUI-DistorchMemoryManager] Successfully imported PatchSageAttentionDM from .nodes.sa")
+    print("[ComfyUI-VRAM-Manager] Successfully imported PatchSageAttentionDM from .nodes.sa")
 except ImportError as e:
     try:
         from nodes.sa import PatchSageAttentionDM
-        print("[ComfyUI-DistorchMemoryManager] Successfully imported PatchSageAttentionDM from nodes.sa")
+        print("[ComfyUI-VRAM-Manager] Successfully imported PatchSageAttentionDM from nodes.sa")
     except ImportError as e2:
-        print(f"[ComfyUI-DistorchMemoryManager] WARNING: Failed to import PatchSageAttentionDM: {e2}")
+        print(f"[ComfyUI-VRAM-Manager] WARNING: Failed to import PatchSageAttentionDM: {e2}")
         PatchSageAttentionDM = None
 
 
@@ -302,25 +302,25 @@ NODE_CLASS_MAPPINGS = {
 # Register Memory Manager nodes if available
 if MemoryManager is not None:
     NODE_CLASS_MAPPINGS["MemoryManager"] = MemoryManager
-    print("[ComfyUI-DistorchMemoryManager] Registered MemoryManager node")
+    print("[ComfyUI-VRAM-Manager] Registered MemoryManager node")
 else:
-    print("[ComfyUI-DistorchMemoryManager] ERROR: MemoryManager is None, not registered")
+    print("[ComfyUI-VRAM-Manager] ERROR: MemoryManager is None, not registered")
 
 # Register Purge VRAM V2 node if available
 if DisTorchPurgeVRAMV2 is not None:
     NODE_CLASS_MAPPINGS["DisTorchPurgeVRAMV2"] = DisTorchPurgeVRAMV2
-    print("[ComfyUI-DistorchMemoryManager] Registered DisTorchPurgeVRAMV2 node")
+    print("[ComfyUI-VRAM-Manager] Registered DisTorchPurgeVRAMV2 node")
 else:
-    print("[ComfyUI-DistorchMemoryManager] ERROR: DisTorchPurgeVRAMV2 is None, not registered")
+    print("[ComfyUI-VRAM-Manager] ERROR: DisTorchPurgeVRAMV2 is None, not registered")
 
 # Register SageAttention node if available
 if PatchSageAttentionDM is not None:
     NODE_CLASS_MAPPINGS["PatchSageAttentionDM"] = PatchSageAttentionDM
-    print("[ComfyUI-DistorchMemoryManager] Registered PatchSageAttentionDM node")
+    print("[ComfyUI-VRAM-Manager] Registered PatchSageAttentionDM node")
 else:
-    print("[ComfyUI-DistorchMemoryManager] ERROR: PatchSageAttentionDM is None, not registered")
+    print("[ComfyUI-VRAM-Manager] ERROR: PatchSageAttentionDM is None, not registered")
 
-print(f"[ComfyUI-DistorchMemoryManager] Total registered nodes: {list(NODE_CLASS_MAPPINGS.keys())}")
+print(f"[ComfyUI-VRAM-Manager] Total registered nodes: {list(NODE_CLASS_MAPPINGS.keys())}")
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ModelPatchMemoryCleaner": "Model Patch Memory Cleaner",
