@@ -104,6 +104,48 @@ def _install_sage_attention_noise_guard():
 
 _install_sage_attention_noise_guard()
 
+
+def _install_general_vram_management():
+    """
+    Startup patch: auto-detect non-PyTorch VRAM usage (browsers, other apps)
+    via NVML and patch comfy.model_management.EXTRA_RESERVED_VRAM at load time.
+
+    Based on ComfyUI-ReservedVRAM by Windecay (Apache-2.0).
+    """
+    try:
+        import pynvml
+        try:
+            pynvml.nvmlInit()
+        except Exception as e:
+            print(f"[ComfyUI-VRAM-Manager] WARNING: pynvml NVML init failed: {e}")
+            return
+    except ImportError:
+        print("[ComfyUI-VRAM-Manager] INFO: pynvml (nvidia-ml-py) not installed. Startup VRAM patch skipped.")
+        return
+
+    if not torch.cuda.is_available():
+        return
+
+    try:
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        nvml_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        system_used = nvml_info.used
+
+        torch_free, torch_total = torch.cuda.mem_get_info()
+        torch_used = torch_total - torch_free
+
+        non_torch = max(0, system_used - torch_used)
+
+        import comfy.model_management as mm
+        mm.EXTRA_RESERVED_VRAM = non_torch
+        non_torch_gb = non_torch / (1024 * 1024 * 1024)
+        print(f"[ComfyUI-VRAM-Manager] Startup patch: detected {non_torch_gb:.2f} GB non-PyTorch VRAM usage; EXTRA_RESERVED_VRAM patched")
+    except Exception as e:
+        print(f"[ComfyUI-VRAM-Manager] Startup patch error: {e}")
+
+
+_install_general_vram_management()
+
 # Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
 try:
     from .nodes.memory_manager import MemoryManager, any
