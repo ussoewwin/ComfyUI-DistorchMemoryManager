@@ -128,8 +128,12 @@ def _install_general_vram_management():
 
     try:
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        gpu_name = pynvml.nvmlDeviceGetName(handle)
+        if isinstance(gpu_name, bytes):
+            gpu_name = gpu_name.decode("utf-8")
         nvml_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         system_used = nvml_info.used
+        vram_total = nvml_info.total
 
         torch_free, torch_total = torch.cuda.mem_get_info()
         torch_used = torch_total - torch_free
@@ -137,9 +141,19 @@ def _install_general_vram_management():
         non_torch = max(0, system_used - torch_used)
 
         import comfy.model_management as mm
+        original_reserved = getattr(mm, "EXTRA_RESERVED_VRAM", 0)
         mm.EXTRA_RESERVED_VRAM = non_torch
-        non_torch_gb = non_torch / (1024 * 1024 * 1024)
-        print(f"[ComfyUI-VRAM-Manager] Startup patch: detected {non_torch_gb:.2f} GB non-PyTorch VRAM usage; EXTRA_RESERVED_VRAM patched")
+
+        # Detailed startup log
+        to_gb = lambda b: b / (1024 * 1024 * 1024)
+        print(f"[ComfyUI-VRAM-Manager] ── Startup VRAM Patch ──")
+        print(f"[ComfyUI-VRAM-Manager]   GPU: {gpu_name}")
+        print(f"[ComfyUI-VRAM-Manager]   VRAM Total:          {to_gb(vram_total):.2f} GB")
+        print(f"[ComfyUI-VRAM-Manager]   System-wide used:    {to_gb(system_used):.2f} GB  (NVML)")
+        print(f"[ComfyUI-VRAM-Manager]   PyTorch used:        {to_gb(torch_used):.2f} GB")
+        print(f"[ComfyUI-VRAM-Manager]   Non-PyTorch used:    {to_gb(non_torch):.2f} GB  (browsers, other apps)")
+        print(f"[ComfyUI-VRAM-Manager]   EXTRA_RESERVED_VRAM: {to_gb(original_reserved):.2f} GB → {to_gb(non_torch):.2f} GB")
+        print(f"[ComfyUI-VRAM-Manager] ── Patch applied ──")
     except Exception as e:
         print(f"[ComfyUI-VRAM-Manager] Startup patch error: {e}")
 

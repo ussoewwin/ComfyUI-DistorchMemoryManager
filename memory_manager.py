@@ -83,7 +83,6 @@ class MemoryManager:
             "force_gc": ("BOOLEAN", {"default": True}),
             "reset_virtual_memory": ("BOOLEAN", {"default": True}),
             "restore_original_functions": ("BOOLEAN", {"default": False, "tooltip": "Restore original model_management functions"}),
-            "general_manage_vram": ("BOOLEAN", {"default": False, "tooltip": "General VRAM management: auto-detect non-PyTorch VRAM usage (browsers, other apps) via NVML and adjust ComfyUI memory management accordingly. Requires nvidia-ml-py."}),
         }}
     
     RETURN_TYPES = (any,)
@@ -91,7 +90,7 @@ class MemoryManager:
     FUNCTION = "manage_memory"
     CATEGORY = "Memory"
 
-    def manage_memory(self, anything, clean_gpu, clean_cpu, force_gc, reset_virtual_memory, restore_original_functions, general_manage_vram=False):
+    def manage_memory(self, anything, clean_gpu, clean_cpu, force_gc, reset_virtual_memory, restore_original_functions):
         try:
             if clean_gpu and torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -127,16 +126,7 @@ class MemoryManager:
                 except Exception as e:
                     print(f"Function restoration failed: {e}")
             
-            # Auto-detect non-PyTorch VRAM usage and adjust ComfyUI memory management
-            if general_manage_vram:
-                non_torch = get_non_torch_vram_usage_bytes()
-                if non_torch is not None:
-                    import comfy.model_management as mm
-                    mm.EXTRA_RESERVED_VRAM = non_torch
-                    non_torch_gb = non_torch / (1024 * 1024 * 1024)
-                    print(f"[ComfyUI-VRAM-Manager] Detected {non_torch_gb:.2f} GB non-PyTorch VRAM usage; adjusted memory management accordingly")
-                else:
-                    print("[ComfyUI-VRAM-Manager] general_manage_vram: Could not detect non-PyTorch VRAM usage (pynvml unavailable or error)")
+
             
             print("Comprehensive memory management completed")
             
