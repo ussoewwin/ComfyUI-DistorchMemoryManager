@@ -2086,23 +2086,61 @@ class DisTorchPurgeVRAMV2:
                 def _purge_detailer_segs_and_executor_cache() -> int:
                     """Drop Impact SEGS / large IMAGE held in PromptExecutor caches now.
 
-                    MultiGPU only sets free_memory flag — reset runs after the prompt.
-                    Detailer SEGS therefore survive the HSWQ INT8 node unless we reset sync.
+                    Do NOT call PromptExecutor.reset() mid-prompt: reset() replaces
+                    CacheSet with a fresh RAMPressureCache that has never run
+                    set_prompt(), so cache_key_set is missing and the next
+                    caches.outputs.get() raises AttributeError.
+
+                    MultiGPU correctly only sets free_memory (reset after prompt).
+                    Here we clear .cache / .subcaches in place so the current
+                    prompt's cache_key_set / initialized state stay valid.
                     """
                     freed_hint = 0
-                    reset_n = 0
+                    cleared_entries = 0
+                    executor_n = 0
                     try:
                         for obj in gc.get_objects():
                             if type(obj).__name__ != "PromptExecutor":
                                 continue
+                            executor_n += 1
                             try:
-                                obj.reset()
-                                reset_n += 1
+                                caches = getattr(obj, "caches", None)
+                                if caches is None:
+                                    continue
+                                for cache in getattr(caches, "all", None) or []:
+                                    try:
+                                        cdict = getattr(cache, "cache", None)
+                                        if isinstance(cdict, dict) and cdict:
+                                            cleared_entries += len(cdict)
+                                            cdict.clear()
+                                        sub = getattr(cache, "subcaches", None)
+                                        if isinstance(sub, dict) and sub:
+                                            cleared_entries += len(sub)
+                                            sub.clear()
+                                        for attr in (
+                                            "timestamps",
+                                            "used_generation",
+                                            "children",
+                                        ):
+                                            bag = getattr(cache, attr, None)
+                                            if isinstance(bag, dict) and bag:
+                                                bag.clear()
+                                    except Exception as e:
+                                        print(
+                                            f"HSWQ INT8: in-place cache clear "
+                                            f"failed: {e}"
+                                        )
                             except Exception as e:
-                                print(f"HSWQ INT8: PromptExecutor.reset failed: {e}")
+                                print(
+                                    f"HSWQ INT8: PromptExecutor cache clear "
+                                    f"failed: {e}"
+                                )
                     except Exception as e:
                         print(f"HSWQ INT8: PromptExecutor scan failed: {e}")
-                    print(f"HSWQ INT8: PromptExecutor.reset() sync count={reset_n}")
+                    print(
+                        f"HSWQ INT8: PromptExecutor in-place cache clear "
+                        f"executors={executor_n} entries={cleared_entries}"
+                    )
 
                     impact_cleared = 0
                     for mod_name, mod in _sys_modules():
