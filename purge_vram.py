@@ -1961,15 +1961,46 @@ class DisTorchPurgeVRAMV2:
                 print(f"Nunchaku: Traceback: {traceback.format_exc()}")
 
         # Purge HSWQ INT8 (comfy_quant int8_tensorwise) + Batched Detailer pin pool
+        # + orphaned ComfyUI cudaHostRegister / CUDA tensors (Task Manager dedicated GPU mem)
         if purge_hswq_int8:
             try:
                 print("HSWQ INT8: Starting purge process...")
                 hswq_cleared = 0
                 bytes_killed = 0
+                pins_unregistered = 0
+                cuda_tensors_killed = 0
+                patchers_unloaded = 0
 
                 def _sys_modules():
                     # Never use a local "import sys" in purge_vram — it shadows module-level sys.
                     return list(sys.modules.items())
+
+                def _mem_diag(tag: str) -> None:
+                    try:
+                        import comfy.model_management as mm
+                        total_pin = int(getattr(mm, "TOTAL_PINNED_MEMORY", 0) or 0)
+                        pin_entries = len(getattr(mm, "PINNED_MEMORY", {}) or {})
+                        print(
+                            f"HSWQ INT8: [{tag}] TOTAL_PINNED_MEMORY="
+                            f"{total_pin / (1024 * 1024):.1f} MB entries={pin_entries}"
+                        )
+                    except Exception as e:
+                        print(f"HSWQ INT8: [{tag}] pin diag failed: {e}")
+                    if torch.cuda.is_available():
+                        try:
+                            for di in range(torch.cuda.device_count()):
+                                alloc = torch.cuda.memory_allocated(di)
+                                reserved = torch.cuda.memory_reserved(di)
+                                free_b, total_b = torch.cuda.mem_get_info(di)
+                                used_sys = max(0, total_b - free_b)
+                                print(
+                                    f"HSWQ INT8: [{tag}] cuda:{di} "
+                                    f"allocated={alloc / (1024 ** 3):.2f}GB "
+                                    f"reserved={reserved / (1024 ** 3):.2f}GB "
+                                    f"sys_used={used_sys / (1024 ** 3):.2f}GB"
+                                )
+                        except Exception as e:
+                            print(f"HSWQ INT8: [{tag}] cuda diag failed: {e}")
 
                 def _drain_hswq_pin_cache() -> int:
                     drained = 0
@@ -1987,7 +2018,6 @@ class DisTorchPurgeVRAMV2:
                                 return drained
                             except Exception as e:
                                 print(f"HSWQ INT8: PinCache purge via {mod_name} failed: {e}")
-                    # Fallback: clear pool attrs if module present but API missing
                     for mod_name, mod in _sys_modules():
                         if mod is None or "hswq_pin_cache" not in str(mod_name):
                             continue
@@ -2013,6 +2043,51 @@ class DisTorchPurgeVRAMV2:
                             print(f"HSWQ INT8: PinCache fallback failed ({mod_name}): {e}")
                     print("HSWQ INT8: PinCache module not loaded (nothing to drain)")
                     return 0
+
+                def _force_unregister_comfy_pins() -> int:
+                    """Unregister every cudaHostRegister tracked by ComfyUI PINNED_MEMORY."""
+                    nonlocal pins_unregistered
+                    freed = 0
+                    try:
+                        import comfy.model_management as mm
+                    except Exception as e:
+                        print(f"HSWQ INT8: cannot import model_management for pin nuke: {e}")
+                        return 0
+                    pinned = getattr(mm, "PINNED_MEMORY", None)
+                    if not isinstance(pinned, dict):
+                        print("HSWQ INT8: PINNED_MEMORY dict missing")
+                        return 0
+                    before = int(getattr(mm, "TOTAL_PINNED_MEMORY", 0) or 0)
+                    print(
+                        f"HSWQ INT8: Force-unregister PINNED_MEMORY "
+                        f"before={before / (1024 * 1024):.1f} MB entries={len(pinned)}"
+                    )
+                    for ptr, size in list(pinned.items()):
+                        try:
+                            if torch.cuda.cudart().cudaHostUnregister(int(ptr)) == 0:
+                                pins_unregistered += 1
+                                freed += int(size or 0)
+                            else:
+                                try:
+                                    mm.discard_cuda_async_error()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            pinned.pop(ptr, None)
+                        except Exception:
+                            pass
+                    try:
+                        mm.TOTAL_PINNED_MEMORY = 0
+                    except Exception:
+                        pass
+                    print(
+                        f"HSWQ INT8: Force-unregister done "
+                        f"unregistered={pins_unregistered} "
+                        f"approx={freed / (1024 * 1024):.1f} MB"
+                    )
+                    return freed
 
                 def _is_real_nn(obj) -> bool:
                     try:
@@ -2048,7 +2123,6 @@ class DisTorchPurgeVRAMV2:
                         for name, buf in module.named_buffers():
                             if not (name.endswith("comfy_quant") or name.endswith(".comfy_quant")):
                                 continue
-                            # Prefer int8_tensorwise marker when decodable
                             try:
                                 raw = buf.detach().cpu()
                                 if raw.dtype == torch.uint8 and raw.numel() > 0:
@@ -2087,7 +2161,6 @@ class DisTorchPurgeVRAMV2:
                     return False
 
                 def _kill_tensor_storage(t) -> int:
-                    """Move off GPU and drop storage. Returns approx bytes freed on CUDA."""
                     if t is None:
                         return 0
                     freed = 0
@@ -2102,6 +2175,18 @@ class DisTorchPurgeVRAMV2:
                             if not is_cuda:
                                 dev = getattr(data, "device", None)
                                 is_cuda = getattr(dev, "type", None) == "cuda"
+                        except Exception:
+                            pass
+                        try:
+                            if bool(getattr(data, "is_pinned", lambda: False)()):
+                                try:
+                                    import comfy.model_management as mm
+                                    mm.unpin_memory(data)
+                                except Exception:
+                                    try:
+                                        torch.cuda.cudart().cudaHostUnregister(data.data_ptr())
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
                         dtype = getattr(data, "dtype", torch.float32)
@@ -2145,11 +2230,50 @@ class DisTorchPurgeVRAMV2:
                     print(f"HSWQ INT8: Killed ~{freed / (1024 * 1024):.1f} MB CUDA storage ({label})")
                     return freed
 
-                # 0) Batched Detailer pin pool (can hold multi-GB; shows as dedicated GPU mem)
+                def _unload_patcher(obj) -> int:
+                    nonlocal patchers_unloaded
+                    freed = 0
+                    try:
+                        if hasattr(obj, "partially_unload_ram") and callable(obj.partially_unload_ram):
+                            try:
+                                freed += int(obj.partially_unload_ram(1e30) or 0)
+                            except Exception:
+                                pass
+                        if hasattr(obj, "unregister_inactive_pins") and callable(obj.unregister_inactive_pins):
+                            try:
+                                freed += int(obj.unregister_inactive_pins(1e30) or 0)
+                            except Exception:
+                                pass
+                        if hasattr(obj, "partially_unload") and callable(obj.partially_unload):
+                            try:
+                                obj.partially_unload(None, 1e30)
+                            except Exception:
+                                try:
+                                    obj.partially_unload(torch.device("cpu"), 1e30)
+                                except Exception:
+                                    pass
+                        if hasattr(obj, "unpatch_model") and callable(obj.unpatch_model):
+                            try:
+                                obj.unpatch_model(torch.device("cpu"), unpatch_weights=True)
+                            except Exception:
+                                pass
+                        if hasattr(obj, "model_unload") and callable(obj.model_unload):
+                            try:
+                                obj.model_unload()
+                            except Exception:
+                                pass
+                        patchers_unloaded += 1
+                    except Exception:
+                        pass
+                    return freed
+
+                _mem_diag("before")
+
+                # 0) Batched Detailer pin pool
                 print("HSWQ INT8: Method 0 - Draining HSWQ Batched Detailer PinCache...")
                 bytes_killed += _drain_hswq_pin_cache()
 
-                # 1) ComfyUI loaded models
+                # 1) ComfyUI loaded models (INT8 first, then unload everything)
                 print("HSWQ INT8: Method 1 - current_loaded_models...")
                 models_checked_mm = 0
                 models_found_mm = 0
@@ -2162,54 +2286,59 @@ class DisTorchPurgeVRAMV2:
                             loaded_model = current_loaded_models[i]
                             models_checked_mm += 1
                             try:
-                                if not _loaded_holds_hswq_int8(loaded_model):
-                                    continue
-                                models_found_mm += 1
-                                print(
-                                    f"HSWQ INT8: Found INT8 at current_loaded_models[{i}] "
-                                    f"type={type(loaded_model).__name__}"
-                                )
+                                is_int8 = _loaded_holds_hswq_int8(loaded_model)
+                                if is_int8:
+                                    models_found_mm += 1
+                                    print(
+                                        f"HSWQ INT8: Found INT8 at current_loaded_models[{i}] "
+                                        f"type={type(loaded_model).__name__}"
+                                    )
+                                    try:
+                                        loaded_model.currently_used = False
+                                    except Exception:
+                                        pass
+                                    nn = None
+                                    try:
+                                        nn = _unwrap_nn(getattr(loaded_model, "model", None))
+                                    except Exception:
+                                        nn = None
+                                    if nn is not None:
+                                        bytes_killed += _kill_module_vram(nn, f"current_loaded_models[{i}]")
+                                    hswq_cleared += 1
+                                # Always tear down pin/hostbuf on every loaded model
                                 try:
-                                    loaded_model.currently_used = False
+                                    inner = getattr(loaded_model, "model", None)
+                                    if inner is not None:
+                                        bytes_killed += _unload_patcher(inner)
                                 except Exception:
                                     pass
-                                nn = None
-                                try:
-                                    nn = _unwrap_nn(getattr(loaded_model, "model", None))
-                                except Exception:
-                                    nn = None
-                                if nn is not None:
-                                    bytes_killed += _kill_module_vram(nn, f"current_loaded_models[{i}]")
                                 try:
                                     if hasattr(loaded_model, "model_unload") and callable(loaded_model.model_unload):
                                         loaded_model.model_unload()
                                 except Exception as e:
                                     print(f"HSWQ INT8: model_unload warning: {e}")
                                 current_loaded_models.pop(i)
-                                hswq_cleared += 1
-                                print(f"HSWQ INT8: Removed current_loaded_models[{i}]")
+                                print(f"HSWQ INT8: Removed current_loaded_models[{i}] (int8={is_int8})")
                             except Exception as e:
                                 print(f"HSWQ INT8: Error at current_loaded_models[{i}]: {e}")
+                    try:
+                        if hasattr(mm, "unload_all_models") and callable(mm.unload_all_models):
+                            mm.unload_all_models()
+                            print("HSWQ INT8: unload_all_models() issued")
+                    except Exception as e:
+                        print(f"HSWQ INT8: unload_all_models warning: {e}")
+                    try:
+                        if torch.cuda.is_available() and hasattr(mm, "free_memory"):
+                            for di in range(torch.cuda.device_count()):
+                                mm.free_memory(1e30, torch.device(f"cuda:{di}"))
+                            print("HSWQ INT8: free_memory(1e30) issued for all CUDA devices")
+                    except Exception as e:
+                        print(f"HSWQ INT8: free_memory warning: {e}")
+                    if hasattr(mm, "cleanup_models_gc") and callable(mm.cleanup_models_gc):
                         try:
-                            if torch.cuda.is_available() and hasattr(mm, "free_memory"):
-                                for di in range(torch.cuda.device_count()):
-                                    mm.free_memory(1e30, torch.device(f"cuda:{di}"))
-                                print("HSWQ INT8: free_memory(1e30) issued for all CUDA devices")
+                            mm.cleanup_models_gc()
                         except Exception as e:
-                            print(f"HSWQ INT8: free_memory warning: {e}")
-                        if hasattr(mm, "cleanup_models_gc") and callable(mm.cleanup_models_gc):
-                            try:
-                                mm.cleanup_models_gc()
-                            except Exception as e:
-                                print(f"HSWQ INT8: cleanup_models_gc warning: {e}")
-                        if hasattr(mm, "soft_empty_cache") and callable(mm.soft_empty_cache):
-                            try:
-                                mm.soft_empty_cache(True)
-                            except Exception:
-                                try:
-                                    mm.soft_empty_cache()
-                                except Exception as e:
-                                    print(f"HSWQ INT8: soft_empty_cache warning: {e}")
+                            print(f"HSWQ INT8: cleanup_models_gc warning: {e}")
                 except Exception as e:
                     print(f"HSWQ INT8: Error in Method 1: {e}")
                     import traceback
@@ -2217,69 +2346,67 @@ class DisTorchPurgeVRAMV2:
                 print(
                     f"HSWQ INT8: Method 1 complete - checked {models_checked_mm}, found {models_found_mm}"
                 )
+                _mem_diag("after_method1")
 
-                # 2) sys.modules attribute scan (strict nn.Module only)
-                print("HSWQ INT8: Method 2 - sys.modules...")
-                modules_checked = 0
-                models_found_sys = 0
-                try:
-                    for module_name, module in _sys_modules():
-                        if module is None:
-                            continue
-                        modules_checked += 1
-                        try:
-                            for attr_name in dir(module):
-                                try:
-                                    attr = getattr(module, attr_name, None)
-                                    if attr is None:
-                                        continue
-                                    nn = _unwrap_nn(attr)
-                                    if not _is_hswq_int8_nn(nn):
-                                        continue
-                                    models_found_sys += 1
-                                    label = f"{module_name}.{attr_name}"
-                                    print(f"HSWQ INT8: Found INT8 at {label}")
-                                    bytes_killed += _kill_module_vram(nn, label)
-                                    try:
-                                        delattr(module, attr_name)
-                                    except Exception:
-                                        try:
-                                            setattr(module, attr_name, None)
-                                        except Exception:
-                                            pass
-                                    hswq_cleared += 1
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print(f"HSWQ INT8: Error in Method 2: {e}")
-                    import traceback
-                    print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
-                print(
-                    f"HSWQ INT8: Method 2 complete - checked {modules_checked}, found {models_found_sys}"
-                )
+                # 2) Force HostUnregister every ComfyUI-tracked pin (NOT sys.modules dir/getattr —
+                #    that triggers kornia LazyLoader basicsr install prompts)
+                print("HSWQ INT8: Method 2 - Force HostUnregister PINNED_MEMORY...")
+                bytes_killed += _force_unregister_comfy_pins()
+                _mem_diag("after_method2")
 
-                # 3) gc scan — torch.nn.Module with baked/comfy_quant only
-                print("HSWQ INT8: Method 3 - gc.get_objects() (strict)...")
+                # 3) gc nuclear: INT8 modules + ModelPatchers + pinned/CUDA tensors
+                print("HSWQ INT8: Method 3 - gc nuclear (no sys.modules getattr)...")
                 objects_checked = 0
                 models_found_in_gc = 0
                 try:
+                    import comfy.model_management as mm
+                except Exception:
+                    mm = None
+                try:
                     for obj in gc.get_objects():
                         objects_checked += 1
-                        if objects_checked > 300000:
-                            print("HSWQ INT8: gc scan limit 300000")
+                        if objects_checked > 500000:
+                            print("HSWQ INT8: gc scan limit 500000")
                             break
                         try:
-                            if not _is_real_nn(obj):
+                            tname = type(obj).__name__
+                            if tname in (
+                                "ModelPatcher",
+                                "ModelPatcherDynamic",
+                                "LoadedModel",
+                            ):
+                                bytes_killed += _unload_patcher(obj)
                                 continue
-                            if not _is_hswq_int8_nn(obj):
+                            if _is_real_nn(obj) and _is_hswq_int8_nn(obj):
+                                models_found_in_gc += 1
+                                hswq_cleared += 1
+                                print(f"HSWQ INT8: Found INT8 in gc type={tname}")
+                                bytes_killed += _kill_module_vram(obj, f"gc:{tname}")
                                 continue
-                            models_found_in_gc += 1
-                            label = f"gc:{type(obj).__name__}"
-                            print(f"HSWQ INT8: Found INT8 in gc type={type(obj).__name__}")
-                            bytes_killed += _kill_module_vram(obj, label)
-                            hswq_cleared += 1
+                            if torch.is_tensor(obj):
+                                nbytes = int(getattr(obj, "nbytes", 0) or 0)
+                                if nbytes < 1024 * 1024:
+                                    continue
+                                try:
+                                    if bool(obj.is_pinned()):
+                                        try:
+                                            if mm is not None:
+                                                mm.unpin_memory(obj)
+                                        except Exception:
+                                            try:
+                                                torch.cuda.cudart().cudaHostUnregister(obj.data_ptr())
+                                            except Exception:
+                                                pass
+                                        pins_unregistered += 1
+                                        bytes_killed += nbytes
+                                except Exception:
+                                    pass
+                                try:
+                                    if bool(obj.is_cuda):
+                                        cuda_tensors_killed += 1
+                                        bytes_killed += _kill_tensor_storage(obj)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                 except Exception as e:
@@ -2287,20 +2414,27 @@ class DisTorchPurgeVRAMV2:
                     import traceback
                     print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
                 print(
-                    f"HSWQ INT8: Method 3 complete - checked {objects_checked}, found {models_found_in_gc}"
+                    f"HSWQ INT8: Method 3 complete - checked {objects_checked}, "
+                    f"int8={models_found_in_gc}, patchers={patchers_unloaded}, "
+                    f"cuda_tensors={cuda_tensors_killed}"
                 )
 
-                # Drain pin cache again after model kill (unload may have re-pooled)
+                # Second PinCache drain + second PINNED_MEMORY sweep
                 print("HSWQ INT8: Method 0b - Second PinCache drain...")
                 bytes_killed += _drain_hswq_pin_cache()
+                print("HSWQ INT8: Method 2b - Second PINNED_MEMORY sweep...")
+                bytes_killed += _force_unregister_comfy_pins()
 
-                # Reset INT8 LoRA counters
+                # Reset INT8 LoRA counters (dict-only, no dir())
                 print("HSWQ INT8: Resetting comfy_quant_int8 counters...")
                 try:
                     for mod_name, mod in _sys_modules():
                         if mod is None or "comfy_quant_int8" not in str(mod_name):
                             continue
-                        reset_fn = getattr(mod, "reset_int8_lora_log_counters", None)
+                        d = getattr(mod, "__dict__", None)
+                        if not isinstance(d, dict):
+                            continue
+                        reset_fn = d.get("reset_int8_lora_log_counters")
                         if callable(reset_fn):
                             print(f"HSWQ INT8: Calling reset_int8_lora_log_counters via {mod_name}")
                             reset_fn()
@@ -2328,12 +2462,24 @@ class DisTorchPurgeVRAMV2:
                 else:
                     print("HSWQ INT8: CUDA not available, skipped CUDA cache clear")
 
+                try:
+                    import comfy.model_management as mm
+                    if hasattr(mm, "soft_empty_cache") and callable(mm.soft_empty_cache):
+                        try:
+                            mm.soft_empty_cache(True)
+                        except TypeError:
+                            mm.soft_empty_cache()
+                except Exception:
+                    pass
+
+                _mem_diag("after")
                 print(
-                    f"HSWQ INT8: Done — cleared {hswq_cleared} model ref(s), "
+                    f"HSWQ INT8: Done — cleared {hswq_cleared} INT8 ref(s), "
+                    f"pins_unregistered={pins_unregistered}, "
+                    f"patchers={patchers_unloaded}, "
+                    f"cuda_tensors={cuda_tensors_killed}, "
                     f"approx {bytes_killed / (1024 * 1024):.1f} MB tracked"
                 )
-                if hswq_cleared == 0 and bytes_killed == 0:
-                    print("HSWQ INT8: No INT8 models / pin pool found (already clear or never loaded)")
 
             except Exception as e:
                 print(f"HSWQ INT8: Error purging models: {e}")
