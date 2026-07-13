@@ -183,12 +183,12 @@ any = AnyType("*")
 
 # Import Purge VRAM V2 node
 try:
-    from .nodes.purge_vram import DisTorchPurgeVRAMV2
-    print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .nodes.purge_vram")
+    from .purge_vram import DisTorchPurgeVRAMV2
+    print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .purge_vram")
 except ImportError as e:
     try:
-        from nodes.purge_vram import DisTorchPurgeVRAMV2
-        print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from nodes.purge_vram")
+        from .nodes.purge_vram import DisTorchPurgeVRAMV2
+        print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .nodes.purge_vram")
     except ImportError as e2:
         print(f"[ComfyUI-VRAM-Manager] WARNING: Failed to import DisTorchPurgeVRAMV2: {e2}")
         DisTorchPurgeVRAMV2 = None
