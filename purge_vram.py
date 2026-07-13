@@ -36,7 +36,7 @@ class DisTorchPurgeVRAMV2:
                 "purge_seedvr2_models": ("BOOLEAN", {"default": False, "tooltip": "Clear SeedVR2 DiT (base) and VAE models from cache"}),
                 "purge_qwen3vl_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Qwen3-VL models from GPU memory"}),
                 "purge_nunchaku_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory"}),
-                "HSWQ INT8": ("BOOLEAN", {"default": False, "tooltip": "Clear HSWQ INT8 models from GPU memory"}),
+                "HSWQ": ("BOOLEAN", {"default": False, "tooltip": "Clear HSWQ INT8 models from GPU memory"}),
             }
         }
 
@@ -46,7 +46,8 @@ class DisTorchPurgeVRAMV2:
     CATEGORY = "DisTorch/Memory"
 
     def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models, **kwargs):
-        purge_hswq_int8 = kwargs.get("HSWQ INT8", False)
+        # Toggle label is "HSWQ"; accept legacy "HSWQ INT8" for old workflows.
+        purge_hswq_int8 = bool(kwargs.get("HSWQ", kwargs.get("HSWQ INT8", False)))
         global torch
         if purge_cache:
             gc.collect()
