@@ -36,6 +36,7 @@ class DisTorchPurgeVRAMV2:
                 "purge_seedvr2_models": ("BOOLEAN", {"default": False, "tooltip": "Clear SeedVR2 DiT (base) and VAE models from cache"}),
                 "purge_qwen3vl_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Qwen3-VL models from GPU memory"}),
                 "purge_nunchaku_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory"}),
+                "purge_hswq_int8": ("BOOLEAN", {"default": True, "tooltip": "Clear HSWQ INT8 (int8_tensorwise / comfy_quant) models and residual INT8 VRAM"}),
             }
         }
 
@@ -44,7 +45,7 @@ class DisTorchPurgeVRAMV2:
     FUNCTION = "purge_vram"
     CATEGORY = "DisTorch/Memory"
 
-    def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models):
+    def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models, purge_hswq_int8=True):
         global torch
         if purge_cache:
             gc.collect()
@@ -1958,6 +1959,362 @@ class DisTorchPurgeVRAMV2:
                 print(f"Nunchaku: Error purging models: {e}")
                 import traceback
                 print(f"Nunchaku: Traceback: {traceback.format_exc()}")
+
+        # Purge HSWQ INT8 (comfy_quant int8_tensorwise) models / residual VRAM
+        if purge_hswq_int8:
+            try:
+                print("HSWQ INT8: Starting purge process...")
+
+                def _unwrap_nn(obj):
+                    cur = obj
+                    for _ in range(6):
+                        if cur is None:
+                            return None
+                        if hasattr(cur, "named_parameters") and callable(getattr(cur, "named_parameters", None)):
+                            return cur
+                        nxt = getattr(cur, "model", None)
+                        if nxt is None or nxt is cur:
+                            nxt = getattr(cur, "diffusion_model", None)
+                        if nxt is None or nxt is cur:
+                            return cur if hasattr(cur, "named_parameters") else None
+                        cur = nxt
+                    return cur
+
+                def _is_hswq_int8_nn(module) -> bool:
+                    if module is None:
+                        return False
+                    if getattr(module, "_hswq_int8_baked_keys", None):
+                        return True
+                    if getattr(module, "_hswq_int8_baked_uuid", None) is not None:
+                        return True
+                    try:
+                        for name, _buf in module.named_buffers():
+                            if name.endswith("comfy_quant") or name.endswith(".comfy_quant"):
+                                return True
+                            if name.count(".") > 8:
+                                break
+                    except Exception:
+                        pass
+                    try:
+                        checked = 0
+                        for _name, p in module.named_parameters():
+                            if p is None:
+                                continue
+                            dtype = getattr(p, "dtype", None)
+                            if dtype == torch.int8:
+                                return True
+                            if type(p).__name__ == "QuantizedTensor" and (
+                                dtype == torch.int8 or str(dtype) in ("torch.int8", "int8")
+                            ):
+                                return True
+                            data = getattr(p, "data", None)
+                            if data is not None and type(data).__name__ == "QuantizedTensor":
+                                dty = getattr(data, "dtype", None)
+                                if dty == torch.int8 or str(dty) in ("torch.int8", "int8"):
+                                    return True
+                            checked += 1
+                            if checked >= 64:
+                                break
+                    except Exception:
+                        pass
+                    return False
+
+                def _loaded_holds_hswq_int8(loaded_model) -> bool:
+                    if loaded_model is None:
+                        return False
+                    candidates = []
+                    for attr in ("model", "real_model"):
+                        try:
+                            v = getattr(loaded_model, attr, None)
+                            if callable(v):
+                                try:
+                                    v = v()
+                                except Exception:
+                                    v = None
+                            if v is not None:
+                                candidates.append(v)
+                        except Exception:
+                            pass
+                    for cand in candidates:
+                        nn = _unwrap_nn(cand)
+                        if _is_hswq_int8_nn(nn):
+                            return True
+                        inner = getattr(cand, "model", None)
+                        if inner is not None and _is_hswq_int8_nn(_unwrap_nn(inner)):
+                            return True
+                    return False
+
+                def _move_int8_module_to_cpu(module, label: str) -> None:
+                    try:
+                        print(f"HSWQ INT8: Attempting to move model to CPU ({label})...")
+                        if hasattr(module, "to") and callable(module.to):
+                            module.to("cpu")
+                            print(f"HSWQ INT8: Model moved to CPU using .to('cpu') ({label})")
+                        elif hasattr(module, "cpu") and callable(module.cpu):
+                            module.cpu()
+                            print(f"HSWQ INT8: Model moved to CPU using .cpu() ({label})")
+                    except Exception as e:
+                        print(f"HSWQ INT8: Direct move to CPU failed ({label}): {e}, trying parameter-by-parameter move...")
+                        try:
+                            params_moved = 0
+                            buffers_moved = 0
+                            if hasattr(module, "parameters"):
+                                for param in module.parameters():
+                                    if param is not None and getattr(param, "is_cuda", False):
+                                        param.data = param.data.cpu()
+                                        params_moved += 1
+                            if hasattr(module, "buffers"):
+                                for buffer in module.buffers():
+                                    if buffer is not None and getattr(buffer, "is_cuda", False):
+                                        buffer.data = buffer.data.cpu()
+                                        buffers_moved += 1
+                            print(
+                                f"HSWQ INT8: Moved {params_moved} parameters and {buffers_moved} buffers to CPU ({label})"
+                            )
+                        except Exception as e2:
+                            print(f"HSWQ INT8: Parameter-by-parameter move also failed ({label}): {e2}")
+
+                def _clear_int8_module_state(module, label: str) -> None:
+                    try:
+                        if hasattr(module, "_hswq_int8_baked_keys"):
+                            module._hswq_int8_baked_keys = None
+                        if hasattr(module, "_hswq_int8_baked_uuid"):
+                            module._hswq_int8_baked_uuid = None
+                        if hasattr(module, "named_parameters"):
+                            for _name, param in list(module.named_parameters(recurse=False)):
+                                if param is not None and hasattr(param, "data") and param.data is not None:
+                                    try:
+                                        del param.data
+                                    except Exception:
+                                        pass
+                        if hasattr(module, "named_buffers"):
+                            for _name, buffer in list(module.named_buffers(recurse=False)):
+                                if buffer is not None and hasattr(buffer, "data") and buffer.data is not None:
+                                    try:
+                                        del buffer.data
+                                    except Exception:
+                                        pass
+                        print(f"HSWQ INT8: Cleared model internal state ({label})")
+                    except Exception as e:
+                        print(f"HSWQ INT8: Warning: Failed to clear model internal state ({label}): {e}")
+
+                hswq_cleared = 0
+
+                # Method 1: ComfyUI model management
+                print("HSWQ INT8: Method 1 - Searching ComfyUI current_loaded_models for INT8 models...")
+                models_checked_mm = 0
+                models_found_mm = 0
+                try:
+                    import comfy.model_management as mm
+                    print("HSWQ INT8: Successfully imported comfy.model_management")
+                    if hasattr(mm, "current_loaded_models"):
+                        current_loaded_models = mm.current_loaded_models
+                        print(f"HSWQ INT8: current_loaded_models count={len(current_loaded_models)}")
+                        for i in range(len(current_loaded_models) - 1, -1, -1):
+                            loaded_model = current_loaded_models[i]
+                            models_checked_mm += 1
+                            try:
+                                if not _loaded_holds_hswq_int8(loaded_model):
+                                    continue
+                                models_found_mm += 1
+                                print(f"HSWQ INT8: Found INT8 model instance at current_loaded_models[{i}] type={type(loaded_model).__name__}")
+                                try:
+                                    loaded_model.currently_used = False
+                                    print(f"HSWQ INT8: Marked currently_used=False at current_loaded_models[{i}]")
+                                except Exception as e:
+                                    print(f"HSWQ INT8: Failed to mark currently_used=False: {e}")
+                                nn = None
+                                try:
+                                    raw = getattr(loaded_model, "model", None)
+                                    nn = _unwrap_nn(raw)
+                                except Exception:
+                                    nn = None
+                                if nn is not None:
+                                    _move_int8_module_to_cpu(nn, f"current_loaded_models[{i}]")
+                                    _clear_int8_module_state(nn, f"current_loaded_models[{i}]")
+                                try:
+                                    if hasattr(loaded_model, "model_unload") and callable(loaded_model.model_unload):
+                                        print(f"HSWQ INT8: Calling model_unload() at current_loaded_models[{i}]...")
+                                        loaded_model.model_unload()
+                                        print(f"HSWQ INT8: model_unload() completed at current_loaded_models[{i}]")
+                                except Exception as e:
+                                    print(f"HSWQ INT8: model_unload warning at current_loaded_models[{i}]: {e}")
+                                current_loaded_models.pop(i)
+                                hswq_cleared += 1
+                                print(f"HSWQ INT8: Successfully cleared model from current_loaded_models[{i}]")
+                            except Exception as e:
+                                print(f"HSWQ INT8: Error clearing model from current_loaded_models[{i}]: {e}")
+                                import traceback
+                                print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
+                        if hasattr(mm, "cleanup_models_gc") and callable(mm.cleanup_models_gc):
+                            try:
+                                print("HSWQ INT8: Calling cleanup_models_gc()...")
+                                mm.cleanup_models_gc()
+                                print("HSWQ INT8: cleanup_models_gc() completed")
+                            except Exception as e:
+                                print(f"HSWQ INT8: cleanup_models_gc warning: {e}")
+                    else:
+                        print("HSWQ INT8: current_loaded_models attribute not found")
+                except Exception as e:
+                    print(f"HSWQ INT8: Error in Method 1 (model management): {e}")
+                    import traceback
+                    print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
+                print(
+                    f"HSWQ INT8: Method 1 complete - checked {models_checked_mm} loaded model(s), found {models_found_mm}"
+                )
+
+                # Method 2: sys.modules attribute scan
+                print("HSWQ INT8: Method 2 - Searching sys.modules for INT8 models...")
+                modules_checked = 0
+                models_found_sys = 0
+                try:
+                    modules_items = list(sys.modules.items())
+                    for module_name, module in modules_items:
+                        if module is None:
+                            continue
+                        modules_checked += 1
+                        try:
+                            for attr_name in dir(module):
+                                try:
+                                    attr = getattr(module, attr_name, None)
+                                    if attr is None:
+                                        continue
+                                    nn = _unwrap_nn(attr)
+                                    if not _is_hswq_int8_nn(nn):
+                                        if isinstance(attr, dict) and "model" in attr:
+                                            model_obj = attr.get("model")
+                                            nn = _unwrap_nn(model_obj)
+                                            if not _is_hswq_int8_nn(nn):
+                                                continue
+                                            print(f"HSWQ INT8: Found INT8 model in dict at {module_name}.{attr_name}")
+                                            models_found_sys += 1
+                                            _move_int8_module_to_cpu(nn, f"{module_name}.{attr_name}.model")
+                                            _clear_int8_module_state(nn, f"{module_name}.{attr_name}.model")
+                                            try:
+                                                attr["model"] = None
+                                                print(f"HSWQ INT8: Cleared dict['model'] at {module_name}.{attr_name}")
+                                            except Exception as e:
+                                                print(f"HSWQ INT8: Failed to clear dict['model']: {e}")
+                                            hswq_cleared += 1
+                                            print(f"HSWQ INT8: Successfully cleared model from dict in {module_name}.{attr_name}")
+                                        continue
+                                    print(f"HSWQ INT8: Found INT8 model instance at {module_name}.{attr_name}")
+                                    models_found_sys += 1
+                                    _move_int8_module_to_cpu(nn, f"{module_name}.{attr_name}")
+                                    _clear_int8_module_state(nn, f"{module_name}.{attr_name}")
+                                    try:
+                                        if hasattr(module, attr_name):
+                                            delattr(module, attr_name)
+                                            print(f"HSWQ INT8: Deleted model reference from {module_name}.{attr_name}")
+                                    except Exception as e:
+                                        print(f"HSWQ INT8: Failed to delete model reference: {e}")
+                                    try:
+                                        del attr
+                                        print(f"HSWQ INT8: Deleted model object at {module_name}.{attr_name}")
+                                    except Exception as e:
+                                        print(f"HSWQ INT8: Failed to delete model object: {e}")
+                                    hswq_cleared += 1
+                                    print(f"HSWQ INT8: Successfully cleared model from {module_name}.{attr_name}")
+                                except Exception:
+                                    pass
+                        except Exception as e:
+                            print(f"HSWQ INT8: Warning: Error checking module {module_name}: {e}")
+                except Exception as e:
+                    print(f"HSWQ INT8: Error in Method 2 (sys.modules): {e}")
+                    import traceback
+                    print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
+                print(
+                    f"HSWQ INT8: Method 2 complete - checked {modules_checked} modules, found {models_found_sys}"
+                )
+
+                # Method 3: gc.get_objects()
+                print("HSWQ INT8: Method 3 - Searching gc.get_objects() for INT8 models...")
+                objects_checked = 0
+                models_found_in_gc = 0
+                try:
+                    for obj in gc.get_objects():
+                        objects_checked += 1
+                        if objects_checked > 200000:
+                            print("HSWQ INT8: gc.get_objects() scan limit reached (200000)")
+                            break
+                        try:
+                            if not hasattr(obj, "named_parameters"):
+                                continue
+                            if not _is_hswq_int8_nn(obj):
+                                continue
+                            models_found_in_gc += 1
+                            label = f"gc:{type(obj).__name__}"
+                            print(f"HSWQ INT8: Found INT8 model in gc.get_objects() type={type(obj).__name__}")
+                            _move_int8_module_to_cpu(obj, label)
+                            _clear_int8_module_state(obj, label)
+                            hswq_cleared += 1
+                            print("HSWQ INT8: Successfully cleared model from gc.get_objects()")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"HSWQ INT8: Error in Method 3 (gc.get_objects): {e}")
+                    import traceback
+                    print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
+                print(
+                    f"HSWQ INT8: Method 3 complete - checked {objects_checked} objects, found {models_found_in_gc} models"
+                )
+
+                # Reset INT8 LoRA bake counters if unofficial loader patch module is present
+                print("HSWQ INT8: Searching sys.modules for comfy_quant_int8 reset helpers...")
+                try:
+                    reset_fn = None
+                    reset_mod_name = None
+                    for mod_name, mod in list(sys.modules.items()):
+                        if mod is None:
+                            continue
+                        if "comfy_quant_int8" not in mod_name:
+                            continue
+                        print(f"HSWQ INT8: Found patch module {mod_name}")
+                        if hasattr(mod, "reset_int8_lora_log_counters"):
+                            reset_fn = getattr(mod, "reset_int8_lora_log_counters")
+                            reset_mod_name = mod_name
+                            break
+                    if reset_fn is not None:
+                        print(f"HSWQ INT8: Calling reset_int8_lora_log_counters() via {reset_mod_name}...")
+                        reset_fn()
+                        print("HSWQ INT8: reset_int8_lora_log_counters() completed")
+                    else:
+                        print("HSWQ INT8: reset_int8_lora_log_counters not available (patch module not loaded)")
+                except Exception as e:
+                    print(f"HSWQ INT8: counter reset skipped: {e}")
+                    import traceback
+                    print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
+
+                print("HSWQ INT8: Running garbage collection...")
+                gc.collect()
+                gc.collect()
+                if torch.cuda.is_available():
+                    print("HSWQ INT8: Clearing CUDA cache...")
+                    for device_idx in range(torch.cuda.device_count()):
+                        with torch.cuda.device(device_idx):
+                            torch.cuda.empty_cache()
+                            try:
+                                torch.cuda.ipc_collect()
+                            except Exception:
+                                pass
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    print("HSWQ INT8: CUDA cache cleared for all devices")
+                else:
+                    print("HSWQ INT8: CUDA not available, skipped CUDA cache clear")
+
+                if hswq_cleared > 0:
+                    print(f"HSWQ INT8: Successfully cleared {hswq_cleared} model(s)")
+                else:
+                    print("HSWQ INT8: No models found in memory (models may not be cached or already cleared)")
+
+            except Exception as e:
+                print(f"HSWQ INT8: Error purging models: {e}")
+                import traceback
+                print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
+
 
         return (anything,)
 
