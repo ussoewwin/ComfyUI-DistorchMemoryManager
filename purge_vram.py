@@ -2205,6 +2205,39 @@ class DisTorchPurgeVRAMV2:
                     )
                     return freed_hint
 
+                def _reset_comfy_kitchen_cuda_caches() -> None:
+                    """Drop comfy_kitchen global CUDA buffers after nuclear tensor kill.
+
+                    Method 0s / Method 3 walk gc.get_objects() and replace storage on
+                    large CUDA tensors. That includes comfy_kitchen's cuBLAS workspace
+                    (4 MiB or 32 MiB uint8) which stays cached in
+                    ``_cublas_workspaces``. Model reload does not recreate it —
+                    get_cublas_workspace() returns the dead tensor →
+                    cublas_gemm_int8 sees PyCapsule instead of ndarray (2nd gen).
+                    """
+                    try:
+                        import comfy_kitchen.backends.cuda as ck_cuda
+                    except Exception as e:
+                        print(f"HSWQ INT8: comfy_kitchen cuda import skipped: {e}")
+                        return
+                    cleared = []
+                    for attr in (
+                        "_cublas_workspaces",
+                        "_empty_cuda_tensors",
+                    ):
+                        bag = getattr(ck_cuda, attr, None)
+                        if isinstance(bag, dict) and bag:
+                            n = len(bag)
+                            bag.clear()
+                            cleared.append(f"{attr}={n}")
+                    if cleared:
+                        print(
+                            "HSWQ INT8: Reset comfy_kitchen CUDA caches "
+                            + ", ".join(cleared)
+                        )
+                    else:
+                        print("HSWQ INT8: comfy_kitchen CUDA caches already empty")
+
                 def _force_unregister_comfy_pins() -> int:
                     """Unregister every cudaHostRegister tracked by ComfyUI PINNED_MEMORY."""
                     nonlocal pins_unregistered
@@ -2589,6 +2622,11 @@ class DisTorchPurgeVRAMV2:
                 bytes_killed += _purge_detailer_segs_and_executor_cache()
                 print("HSWQ INT8: Method 2b - Second PINNED_MEMORY sweep...")
                 bytes_killed += _force_unregister_comfy_pins()
+
+                # Nuclear CUDA tensor kill may have destroyed kitchen workspaces
+                # while leaving dead refs in module-level dicts — clear them.
+                print("HSWQ INT8: Method 2c - Reset comfy_kitchen CUDA caches...")
+                _reset_comfy_kitchen_cuda_caches()
 
                 # Reset INT8 LoRA counters (dict-only, no dir())
                 print("HSWQ INT8: Resetting comfy_quant_int8 counters...")
