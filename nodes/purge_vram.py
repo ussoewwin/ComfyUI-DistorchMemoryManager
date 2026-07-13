@@ -36,7 +36,7 @@ class DisTorchPurgeVRAMV2:
                 "purge_seedvr2_models": ("BOOLEAN", {"default": False, "tooltip": "Clear SeedVR2 DiT (base) and VAE models from cache"}),
                 "purge_qwen3vl_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Qwen3-VL models from GPU memory"}),
                 "purge_nunchaku_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory"}),
-                "HSWQ INT8": ("BOOLEAN", {"default": False, "tooltip": "Clear HSWQ INT8 models from GPU memory"}),
+                "HSWQ": ("BOOLEAN", {"default": False, "tooltip": "Clear HSWQ INT8 models from GPU memory"}),
             }
         }
 
@@ -46,7 +46,8 @@ class DisTorchPurgeVRAMV2:
     CATEGORY = "DisTorch/Memory"
 
     def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models, **kwargs):
-        purge_hswq_int8 = kwargs.get("HSWQ INT8", False)
+        # Toggle label is "HSWQ"; accept legacy "HSWQ INT8" for old workflows.
+        purge_hswq_int8 = bool(kwargs.get("HSWQ", kwargs.get("HSWQ INT8", False)))
         global torch
         if purge_cache:
             gc.collect()
@@ -2004,45 +2005,238 @@ class DisTorchPurgeVRAMV2:
 
                 def _drain_hswq_pin_cache() -> int:
                     drained = 0
-                    for mod_name, mod in _sys_modules():
-                        if mod is None or "hswq_pin_cache" not in str(mod_name):
-                            continue
+
+                    def _call_purge(mod, mod_name: str) -> int:
                         fn = getattr(mod, "purge_pin_cache", None)
                         if callable(fn):
-                            try:
-                                drained = int(fn() or 0)
-                                print(
-                                    f"HSWQ INT8: PinCache purged via {mod_name}: "
-                                    f"{drained / (1024 * 1024):.1f} MB"
-                                )
-                                return drained
-                            except Exception as e:
-                                print(f"HSWQ INT8: PinCache purge via {mod_name} failed: {e}")
+                            got = int(fn() or 0)
+                            print(
+                                f"HSWQ INT8: PinCache purged via {mod_name}: "
+                                f"{got / (1024 * 1024):.1f} MB"
+                            )
+                            return got
+                        pool = getattr(mod, "_PIN_BUFFER_POOL", None)
+                        total = int(getattr(mod, "_PIN_CACHE_TOTAL", 0) or 0)
+                        drain = getattr(mod, "_drain_pool", None)
+                        if callable(drain):
+                            setattr(mod, "_active", False)
+                            setattr(mod, "_depth", 0)
+                            drain()
+                            print(
+                                f"HSWQ INT8: PinCache _drain_pool via {mod_name}: "
+                                f"{total / (1024 * 1024):.1f} MB"
+                            )
+                            return total
+                        if pool is not None:
+                            pool.clear()
+                            setattr(mod, "_PIN_CACHE_TOTAL", 0)
+                            print(f"HSWQ INT8: PinCache pool cleared via {mod_name}")
+                            return total
+                        return 0
+
                     for mod_name, mod in _sys_modules():
                         if mod is None or "hswq_pin_cache" not in str(mod_name):
                             continue
                         try:
-                            pool = getattr(mod, "_PIN_BUFFER_POOL", None)
-                            total = int(getattr(mod, "_PIN_CACHE_TOTAL", 0) or 0)
-                            drain = getattr(mod, "_drain_pool", None)
-                            if callable(drain):
-                                setattr(mod, "_active", False)
-                                setattr(mod, "_depth", 0)
-                                drain()
-                                print(
-                                    f"HSWQ INT8: PinCache _drain_pool via {mod_name}: "
-                                    f"{total / (1024 * 1024):.1f} MB"
-                                )
-                                return total
-                            if pool is not None:
-                                pool.clear()
-                                setattr(mod, "_PIN_CACHE_TOTAL", 0)
-                                print(f"HSWQ INT8: PinCache pool cleared via {mod_name}")
-                                return total
+                            return _call_purge(mod, str(mod_name))
                         except Exception as e:
-                            print(f"HSWQ INT8: PinCache fallback failed ({mod_name}): {e}")
+                            print(f"HSWQ INT8: PinCache purge via {mod_name} failed: {e}")
+
+                    # Force-import: Detailer scope may have ended (deactivate drained
+                    # tracking) or module never stayed in sys.modules under expected name.
+                    try:
+                        import importlib.util
+                        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+                        # purge_vram.py at DistTorch root → custom_nodes is parent
+                        cn_root = os.path.dirname(pkg_dir)
+                        if os.path.basename(pkg_dir) == "nodes":
+                            cn_root = os.path.dirname(os.path.dirname(pkg_dir))
+                        candidates = [
+                            os.path.join(
+                                cn_root,
+                                "ComfyUI-nunchaku-unofficial-loader",
+                                "nodes",
+                                "hswq_pin_cache.py",
+                            ),
+                            os.path.join(
+                                cn_root,
+                                "comfyui-nunchaku-unofficial-loader",
+                                "nodes",
+                                "hswq_pin_cache.py",
+                            ),
+                        ]
+                        for pin_py in candidates:
+                            if not os.path.isfile(pin_py):
+                                continue
+                            print(f"HSWQ INT8: Force-import PinCache from {pin_py}")
+                            spec = importlib.util.spec_from_file_location(
+                                "hswq_pin_cache_force_purge", pin_py
+                            )
+                            if spec is None or spec.loader is None:
+                                continue
+                            mod = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(mod)
+                            sys.modules["hswq_pin_cache_force_purge"] = mod
+                            return _call_purge(mod, pin_py)
+                    except Exception as e:
+                        print(f"HSWQ INT8: PinCache force-import failed: {e}")
+
                     print("HSWQ INT8: PinCache module not loaded (nothing to drain)")
                     return 0
+
+                def _purge_detailer_segs_and_executor_cache() -> int:
+                    """Drop Impact SEGS / large IMAGE held in PromptExecutor caches now.
+
+                    Do NOT call PromptExecutor.reset() mid-prompt: reset() replaces
+                    CacheSet with a fresh RAMPressureCache that has never run
+                    set_prompt(), so cache_key_set is missing and the next
+                    caches.outputs.get() raises AttributeError.
+
+                    MultiGPU correctly only sets free_memory (reset after prompt).
+                    Here we clear .cache / .subcaches in place so the current
+                    prompt's cache_key_set / initialized state stay valid.
+                    """
+                    freed_hint = 0
+                    cleared_entries = 0
+                    executor_n = 0
+                    try:
+                        for obj in gc.get_objects():
+                            if type(obj).__name__ != "PromptExecutor":
+                                continue
+                            executor_n += 1
+                            try:
+                                caches = getattr(obj, "caches", None)
+                                if caches is None:
+                                    continue
+                                for cache in getattr(caches, "all", None) or []:
+                                    try:
+                                        cdict = getattr(cache, "cache", None)
+                                        if isinstance(cdict, dict) and cdict:
+                                            cleared_entries += len(cdict)
+                                            cdict.clear()
+                                        sub = getattr(cache, "subcaches", None)
+                                        if isinstance(sub, dict) and sub:
+                                            cleared_entries += len(sub)
+                                            sub.clear()
+                                        for attr in (
+                                            "timestamps",
+                                            "used_generation",
+                                            "children",
+                                        ):
+                                            bag = getattr(cache, attr, None)
+                                            if isinstance(bag, dict) and bag:
+                                                bag.clear()
+                                    except Exception as e:
+                                        print(
+                                            f"HSWQ INT8: in-place cache clear "
+                                            f"failed: {e}"
+                                        )
+                            except Exception as e:
+                                print(
+                                    f"HSWQ INT8: PromptExecutor cache clear "
+                                    f"failed: {e}"
+                                )
+                    except Exception as e:
+                        print(f"HSWQ INT8: PromptExecutor scan failed: {e}")
+                    print(
+                        f"HSWQ INT8: PromptExecutor in-place cache clear "
+                        f"executors={executor_n} entries={cleared_entries}"
+                    )
+
+                    impact_cleared = 0
+                    for mod_name, mod in _sys_modules():
+                        if mod is None:
+                            continue
+                        n = str(mod_name).replace("\\", "/")
+                        if "impact/core" not in n and not n.endswith("impact.core"):
+                            if "impact.core" not in n:
+                                continue
+                        d = getattr(mod, "__dict__", None)
+                        if not isinstance(d, dict):
+                            continue
+                        for attr in (
+                            "preview_bridge_cache",
+                            "preview_bridge_last_mask_cache",
+                            "preview_bridge_image_id_map",
+                            "preview_bridge_image_name_map",
+                        ):
+                            bag = d.get(attr)
+                            if isinstance(bag, dict) and bag:
+                                impact_cleared += len(bag)
+                                bag.clear()
+                    if impact_cleared:
+                        print(
+                            f"HSWQ INT8: Impact preview/SEG bridge caches cleared "
+                            f"entries={impact_cleared}"
+                        )
+
+                    # Kill large CUDA / pinned tensors still reachable (SEG crops etc.)
+                    tensor_killed = 0
+                    try:
+                        for obj in gc.get_objects():
+                            try:
+                                if not torch.is_tensor(obj):
+                                    continue
+                                nbytes = int(getattr(obj, "nbytes", 0) or 0)
+                                if nbytes < 4 * 1024 * 1024:
+                                    continue
+                                pinned = False
+                                try:
+                                    pinned = bool(obj.is_pinned())
+                                except Exception:
+                                    pass
+                                on_cuda = False
+                                try:
+                                    on_cuda = bool(obj.is_cuda)
+                                except Exception:
+                                    pass
+                                if not pinned and not on_cuda:
+                                    continue
+                                freed_hint += _kill_tensor_storage(obj)
+                                tensor_killed += 1
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        print(f"HSWQ INT8: SEGS tensor sweep failed: {e}")
+                    print(
+                        f"HSWQ INT8: Detailer SEGS/cache sweep "
+                        f"tensors_touched={tensor_killed} "
+                        f"approx={freed_hint / (1024 * 1024):.1f} MB"
+                    )
+                    return freed_hint
+
+                def _reset_comfy_kitchen_cuda_caches() -> None:
+                    """Drop comfy_kitchen global CUDA buffers after nuclear tensor kill.
+
+                    Method 0s / Method 3 walk gc.get_objects() and replace storage on
+                    large CUDA tensors. That includes comfy_kitchen's cuBLAS workspace
+                    (4 MiB or 32 MiB uint8) which stays cached in
+                    ``_cublas_workspaces``. Model reload does not recreate it —
+                    get_cublas_workspace() returns the dead tensor →
+                    cublas_gemm_int8 sees PyCapsule instead of ndarray (2nd gen).
+                    """
+                    try:
+                        import comfy_kitchen.backends.cuda as ck_cuda
+                    except Exception as e:
+                        print(f"HSWQ INT8: comfy_kitchen cuda import skipped: {e}")
+                        return
+                    cleared = []
+                    for attr in (
+                        "_cublas_workspaces",
+                        "_empty_cuda_tensors",
+                    ):
+                        bag = getattr(ck_cuda, attr, None)
+                        if isinstance(bag, dict) and bag:
+                            n = len(bag)
+                            bag.clear()
+                            cleared.append(f"{attr}={n}")
+                    if cleared:
+                        print(
+                            "HSWQ INT8: Reset comfy_kitchen CUDA caches "
+                            + ", ".join(cleared)
+                        )
+                    else:
+                        print("HSWQ INT8: comfy_kitchen CUDA caches already empty")
 
                 def _force_unregister_comfy_pins() -> int:
                     """Unregister every cudaHostRegister tracked by ComfyUI PINNED_MEMORY."""
@@ -2272,6 +2466,8 @@ class DisTorchPurgeVRAMV2:
                 # 0) Batched Detailer pin pool
                 print("HSWQ INT8: Method 0 - Draining HSWQ Batched Detailer PinCache...")
                 bytes_killed += _drain_hswq_pin_cache()
+                print("HSWQ INT8: Method 0s - Detailer SEGS / PromptExecutor cache...")
+                bytes_killed += _purge_detailer_segs_and_executor_cache()
 
                 # 1) ComfyUI loaded models (INT8 first, then unload everything)
                 print("HSWQ INT8: Method 1 - current_loaded_models...")
@@ -2422,8 +2618,15 @@ class DisTorchPurgeVRAMV2:
                 # Second PinCache drain + second PINNED_MEMORY sweep
                 print("HSWQ INT8: Method 0b - Second PinCache drain...")
                 bytes_killed += _drain_hswq_pin_cache()
+                print("HSWQ INT8: Method 0s2 - Second Detailer SEGS / executor sweep...")
+                bytes_killed += _purge_detailer_segs_and_executor_cache()
                 print("HSWQ INT8: Method 2b - Second PINNED_MEMORY sweep...")
                 bytes_killed += _force_unregister_comfy_pins()
+
+                # Nuclear CUDA tensor kill may have destroyed kitchen workspaces
+                # while leaving dead refs in module-level dicts — clear them.
+                print("HSWQ INT8: Method 2c - Reset comfy_kitchen CUDA caches...")
+                _reset_comfy_kitchen_cuda_caches()
 
                 # Reset INT8 LoRA counters (dict-only, no dir())
                 print("HSWQ INT8: Resetting comfy_quant_int8 counters...")
