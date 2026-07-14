@@ -332,7 +332,7 @@ if MemoryManager is not None:
 
 # Register Purge VRAM V2 node display name if available
 if DisTorchPurgeVRAMV2 is not None:
-    NODE_DISPLAY_NAME_MAPPINGS["DisTorchPurgeVRAMV2"] = "LayerUtility: Purge VRAM V2"
+    NODE_DISPLAY_NAME_MAPPINGS["DisTorchPurgeVRAMV2"] = "General Purge VRAM V2"
 
 # Register SageAttention node display name if available
 if PatchSageAttentionDM is not None:
