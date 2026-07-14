@@ -11,7 +11,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, and Nunchaku models (FLUX/Z-Image/Qwen-Image). **General Purge VRAM V2** includes an **HSWQ** toggle to reclaim residual VRAM from HSWQ INT8 / Batched Detailer workflows. Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
+**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, Nunchaku models (FLUX/Z-Image/Qwen-Image), and HSWQ INT8 / Batched Detailer. Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
 
 ## Overview
 
