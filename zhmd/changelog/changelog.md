@@ -7,6 +7,7 @@
   </tr>
 </table>
 
+* **v2.4.1** – DisTorchPurgeVRAMV2 **HSWQ** 清理：回收 HSWQ INT8 / Batched Detailer 残留显存（PinCache 强制导入与排空、不在 prompt 中途调用 `reset()` 的 PromptExecutor/SEGS 就地清空、PINNED_MEMORY HostUnregister、gc 核清理）。Method **2c** 在核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存，避免 purge+reload 后 INT8 GEMM 失效。UI 开关更名为 **`HSWQ`**（仍接受旧 kwargs `"HSWQ INT8"`）。fallback `nodes/purge_vram.py` 与 root 同步。详见 [Release Notes v2.4.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.4.1)。
 * **v2.4.0** – 新增在 ComfyUI 启动时执行的 GPU 全局 VRAM 管理自动补丁。通过 NVML 自动检测非 PyTorch 的 VRAM 占用（浏览器、Discord、OBS 等），并在加载时动态调整 ComfyUI 的显存管理（General Manage VRAM）。可避免 PyTorch 无法感知的外部 GPU 进程导致的 OOM，保障系统级显存安全。新增 `nvidia-ml-py` 依赖。详见 [Release Notes v2.4.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/blob/main/zhmd/v240_complete_guide.md)。
 * **v2.3.8** – 技术文档：说明在 PyTorch 2.11.0 下使用 ComfyUI 时的 Flash Attention-2 相关问题，包括故障现象与环境约束。详见 [Release Notes v2.3.8](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.8)。
 * **v2.3.7** – 为已知的 `Unsupported head_dim: 160` 回退路径增加外部运行时 SageAttention 噪声防护，减少重复错误日志刷屏，并将补丁文档限定为仅描述本仓库范围内的变更。详见 [Release Notes v2.3.7](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.7)。
