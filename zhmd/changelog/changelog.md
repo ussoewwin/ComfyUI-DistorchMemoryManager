@@ -8,20 +8,37 @@
 </table>
 
 * **v2.4.1** – DisTorchPurgeVRAMV2 **HSWQ** 清理：回收 HSWQ INT8 / Batched Detailer 残留显存（PinCache 强制导入与排空、不在 prompt 中途调用 `reset()` 的 PromptExecutor/SEGS 就地清空、PINNED_MEMORY HostUnregister、gc 核清理）。Method **2c** 在核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存，避免 purge+reload 后 INT8 GEMM 失效。UI 开关更名为 **`HSWQ`**（仍接受旧 kwargs `"HSWQ INT8"`）。fallback `nodes/purge_vram.py` 与 root 同步。详见 [Release Notes v2.4.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.4.1)。
+
 * **v2.4.0** – 新增在 ComfyUI 启动时执行的 GPU 全局 VRAM 管理自动补丁。通过 NVML 自动检测非 PyTorch 的 VRAM 占用（浏览器、Discord、OBS 等），并在加载时动态调整 ComfyUI 的显存管理（General Manage VRAM）。可避免 PyTorch 无法感知的外部 GPU 进程导致的 OOM，保障系统级显存安全。新增 `nvidia-ml-py` 依赖。详见 [Release Notes v2.4.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/blob/main/zhmd/v240_complete_guide.md)。
+
 * **v2.3.8** – 技术文档：说明在 PyTorch 2.11.0 下使用 ComfyUI 时的 Flash Attention-2 相关问题，包括故障现象与环境约束。详见 [Release Notes v2.3.8](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.8)。
+
 * **v2.3.7** – 为已知的 `Unsupported head_dim: 160` 回退路径增加外部运行时 SageAttention 噪声防护，减少重复错误日志刷屏，并将补丁文档限定为仅描述本仓库范围内的变更。详见 [Release Notes v2.3.7](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.7)。
+
 * **v2.3.6** – 增强 Patch Sage Attention DM 节点中的 SageAttention3（SA3）集成。新增 SA3 专用版本检测函数（`get_sage_attention3_info()`），支持 Blackwell 检测。改进 SA3 实现：张量布局转换（NHD 至 HND）、约束处理（headdim >= 256、attention mask 支持）。当不满足 SA3 约束时自动回退至 PyTorch SDPA。修复在选择 SA3 模式时仍输出 SA2 版本日志的问题。支持 `sageattn3` 与 `sageattn3_per_block_mean` 模式及正确的 per-block mean 处理。详见 [Release Notes v2.3.6](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.6)。
+
 * **v2.3.5** – 修复 purge_vram.py 中重复的 sys 导入，移除模块级已存在的冗余 import。
+
 * **v2.3.4** – 移除 Safe Memory Manager 节点。该节点已从 `__init__.py` 与 `README.md` 中删除，请改用 Memory Manager。
+
 * **v2.3.3** – 修复 `nodes/` 目录下节点的导入路径。Memory Manager、Purge VRAM V2、Patch Sage Attention DM、Model Patch Memory Cleaner 均已正确注册并在 ComfyUI 中显示。解决 [Issue #3](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/issues/3)。详见 [Release Notes v2.3.3](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.3)。
+
 * **v2.3.0** – 新增 Patch Sage Attention DM 节点，将 ComfyUI 的 attention 机制补丁为使用 SageAttention。支持多种 SageAttention 实现（auto、CUDA、Triton、SageAttention 3），通过 ComfyUI 回调系统动态打补丁。新增 Flash-Attention 与 SageAttention 的独立版本检测（与 model_management 模块完全独立）。禁用时自动加载 Flash-Attention（无需 CLI 参数）。每次生成时自动检测并记录 SageAttention 版本（含 CUDA/PyTorch 信息）及 Flash-Attention 版本（FA-2/FA-3 类型）。兼容 ComfyUI attention 函数格式。详见 [Release Notes v2.3.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.3.0)。
+
 * **v2.2.0** – 新增 Patch Sage Attention DM 节点，将 ComfyUI 的 attention 机制补丁为使用 SageAttention。支持多种 SageAttention 实现（auto、CUDA、Triton、SageAttention 3），通过 ComfyUI 回调系统动态打补丁。自动检测并记录 SageAttention 版本（含 CUDA/PyTorch 信息）。兼容 ComfyUI attention 函数格式。详见 [Release Notes v2.2.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.2.0)。
+
 * **v2.0.0** – DisTorchPurgeVRAMV2 节点新增 Qwen3-VL 与 Nunchaku 模型清理支持。Qwen3-VL 支持 device_map="auto" 下从 GPU 显存清理；Nunchaku 模型（FLUX/Z-Image/Qwen-Image）支持 CPU offload 处理。增强 CUDA 缓存清理以支持全部设备。修复 any() 与 AnyType 的命名冲突。增加完整调试日志。显示名称改为 ComfyUI-VRAM-Manager。详见 [Release Notes v2.0.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.0.0)。
+
 * **v1.3.1** – 改进 SeedVR2 缓存检测与提示信息。移除重复消息。明确 cache_model=False（默认）表示模型不会缓存在 GlobalModelCache。增加缓存状态的详细调试信息。详见 [Release Notes v1.3.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.3.1)。
+
 * **v1.3.0** – DisTorchPurgeVRAMV2 节点新增 SeedVR2 模型清理支持。修复 cleanup_models() 中「NoneType object is not callable」错误。修复虚拟内存重置时的 CPU 设备错误。改进 SeedVR2 自定义节点路径检测以适配不同用户环境。详见 [Release Notes v1.3.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.3.0)。
+
 * **v1.2.0** – 新增 Model Patch Memory Cleaner 节点，用于 ModelPatchLoader 的模型补丁（patch model 格式）。防止 ModelPatchLoader 使用后放大时 OOM。处理与标准 ControlNet 不同的特殊 patch 模型格式。增强 DisTorchPurgeVRAMV2：更激进的模型卸载、改进错误处理与安全 None 检查。支持从缓存清理 SeedVR2 的 DiT 与 VAE 模型。修复虚拟内存重置时的 CPU 设备错误。改进 ComfyUI 核心中 cleanup_models() 与 is_dead() 的错误处理。详见 [Release Notes v1.2.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v1.2.0)。
+
 * v1.10.1 – 热修复：确保 DisTorch Purge VRAM V2 节点随包一起发布。
+
 * v1.10 – 在 DisTorch Memory Manager 内新增 LayerUtility: Purge VRAM V2 兼容节点。
+
 * v1.1.0 – 新增 ANY 类型 I/O 支持，简化节点名称，分类移至「Memory」。
+
 * v1.0.0 – 首发，提供核心显存管理功能。
