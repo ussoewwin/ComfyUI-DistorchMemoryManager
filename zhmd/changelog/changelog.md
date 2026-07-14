@@ -7,7 +7,7 @@
   </tr>
 </table>
 
-* **v2.4.1** – DisTorchPurgeVRAMV2 **HSWQ** 清理：回收 HSWQ INT8 / Batched Detailer 残留显存（PinCache 强制导入与排空、不在 prompt 中途调用 `reset()` 的 PromptExecutor/SEGS 就地清空、PINNED_MEMORY HostUnregister、gc 核清理）。Method **2c** 在核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存，避免 purge+reload 后 INT8 GEMM 失效。UI 开关更名为 **`HSWQ`**（仍接受旧 kwargs `"HSWQ INT8"`）。fallback `nodes/purge_vram.py` 与 root 同步。详见 [Release Notes v2.4.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/blob/main/zhmd/v2.4.1.md)。
+* **v2.4.1** – DisTorchPurgeVRAMV2 **HSWQ** 清理：回收完整 HSWQ 残留显存（PinCache 强制导入与排空、不在 prompt 中途调用 `reset()` 的 PromptExecutor/SEGS 就地清空、PINNED_MEMORY HostUnregister、gc 核清理）。Method **2c** 在核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存，使 purge+reload（含 INT8 GEMM）仍可用。UI 开关更名为 **`HSWQ`**（仍接受旧 kwargs `"HSWQ INT8"`）。fallback `nodes/purge_vram.py` 与 root 同步。详见 [Release Notes v2.4.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/blob/main/zhmd/v2.4.1.md)。
 
 * **v2.4.0** – 新增在 ComfyUI 启动时执行的 GPU 全局 VRAM 管理自动补丁。通过 NVML 自动检测非 PyTorch 的 VRAM 占用（浏览器、Discord、OBS 等），并在加载时动态调整 ComfyUI 的显存管理（General Manage VRAM）。可避免 PyTorch 无法感知的外部 GPU 进程导致的 OOM，保障系统级显存安全。新增 `nvidia-ml-py` 依赖。详见 [Release Notes v2.4.0](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/blob/main/zhmd/v240_complete_guide.md)。
 

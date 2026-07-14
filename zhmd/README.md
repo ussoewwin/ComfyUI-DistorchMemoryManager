@@ -11,7 +11,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager**（原 ComfyUI-DistorchMemoryManager）是 ComfyUI 的独立显存管理自定义节点。提供 Distorch 显存管理功能，高效处理 GPU/CPU 内存。支持清理 SeedVR2、Qwen3-VL、Nunchaku 模型（FLUX/Z-Image/Qwen-Image）以及 HSWQ INT8 / Batched Detailer。包含面向 ModelPatchLoader 工作流的 Model Patch Memory Cleaner。通过 NVML 自动检测非 PyTorch 的 VRAM 占用，在多进程环境下防止 OOM。
+**ComfyUI-VRAM-Manager**（原 ComfyUI-DistorchMemoryManager）是 ComfyUI 的独立显存管理自定义节点。提供 Distorch 显存管理功能，高效处理 GPU/CPU 内存。支持清理 SeedVR2、Qwen3-VL、Nunchaku 模型（FLUX/Z-Image/Qwen-Image）以及 HSWQ。包含面向 ModelPatchLoader 工作流的 Model Patch Memory Cleaner。通过 NVML 自动检测非 PyTorch 的 VRAM 占用，在多进程环境下防止 OOM。
 
 ## 概述
 
@@ -72,8 +72,8 @@
   <img src="../png/pvram2.png" width="400">
 </p>
 
-* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关，用于回收 HSWQ INT8 + Batched Detailer 残留显存
-* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）及 HSWQ INT8 残留清理。
+* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关，用于完整 HSWQ 显存清理
+* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）及 HSWQ 清理。
 * **输入**：任意类型 (ANY) 透传
 * **选项**：
    * `purge_cache`：执行 `gc.collect()`、刷新 CUDA 缓存、调用 `torch.cuda.ipc_collect()`
@@ -98,10 +98,10 @@
      * 在 sys.modules、ComfyUI current_loaded_models、gc.get_objects() 中搜索
      * 清理 cache 与临时数据属性（v2.2.0）
      * 处理带 diffusion_model 的 NunchakuSDXL 包装类（v2.2.0）
-   * `HSWQ`：清理 HSWQ INT8 / Batched Detailer 残留 GPU（及相关主机）内存（v2.4.1）
+   * `HSWQ`：清理 HSWQ 残留 GPU（及相关主机）内存 — 面向完整 HSWQ 路径，非仅 INT8（v2.4.1）
      * 强制导入并排空 HSWQ PinCache；就地清空 PromptExecutor / SEGS 缓存（不在 prompt 中途调用 `reset()`）
      * 适用时通过 HostUnregister 释放 PINNED_MEMORY
-     * 核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存（Method **2c**），避免 purge+reload 后 INT8 GEMM 失效
+     * 核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存（Method **2c**），使 purge+reload（含 INT8 GEMM）仍可用
      * UI 标签为 **`HSWQ`**；仍接受旧工作流 kwargs `"HSWQ INT8"`
 * **v1.2.0 增强**：
   * 更激进的模型卸载与完善错误处理
@@ -124,11 +124,11 @@
   * 改进 Nunchaku SDXL VRAM 释放（约 2.5GB）
   * 在清理顶层参数的同时保留模型结构
 * **v2.4.1 增强**：
-  * 专用 **`HSWQ`** 开关，回收 HSWQ INT8 + Batched Detailer 残留
+  * 专用 **`HSWQ`** 开关，完整清理 HSWQ 显存
   * PinCache 强制导入/排空、PromptExecutor/SEGS 就地清空、HostUnregister
   * Method **2c**：核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存
   * fallback `nodes/purge_vram.py` 与根目录节点同步
-* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ INT8 / Detailer 残留。
+* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。
 
 #### Memory Manager（高级）
 

@@ -36,7 +36,7 @@ class DisTorchPurgeVRAMV2:
                 "purge_seedvr2_models": ("BOOLEAN", {"default": False, "tooltip": "Clear SeedVR2 DiT (base) and VAE models from cache"}),
                 "purge_qwen3vl_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Qwen3-VL models from GPU memory"}),
                 "purge_nunchaku_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory"}),
-                "HSWQ": ("BOOLEAN", {"default": False, "tooltip": "Clear HSWQ INT8 models from GPU memory"}),
+                "HSWQ": ("BOOLEAN", {"default": False, "tooltip": "Purge HSWQ residual VRAM (whole HSWQ path: models, PinCache, Detailer caches)"}),
             }
         }
 
@@ -1961,7 +1961,7 @@ class DisTorchPurgeVRAMV2:
                 import traceback
                 print(f"Nunchaku: Traceback: {traceback.format_exc()}")
 
-        # Purge HSWQ INT8 (comfy_quant int8_tensorwise) + Batched Detailer pin pool
+        # Purge HSWQ whole path (models / INT8 / PinCache / Detailer / pins / kitchen)
         # + orphaned ComfyUI cudaHostRegister / CUDA tensors (Task Manager dedicated GPU mem)
         if purge_hswq_int8:
             try:

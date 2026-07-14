@@ -11,7 +11,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, Nunchaku models (FLUX/Z-Image/Qwen-Image), and HSWQ INT8 / Batched Detailer. Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
+**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, Nunchaku models (FLUX/Z-Image/Qwen-Image), and HSWQ. Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
 
 ## Overview
 
@@ -72,8 +72,8 @@ This is a completely original implementation designed specifically for Distorch 
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/pvram2.png" width="400">
 </p>
 
-* **Description**: Distortch suite node **General Purge VRAM V2** (formerly LayerStyle `LayerUtility: Purge VRAM V2`; class id `DisTorchPurgeVRAMV2`) with enhanced model unloading, SeedVR2 / Qwen3-VL / Nunchaku purging, and (v2.4.1) an **`HSWQ`** toggle for HSWQ INT8 + Batched Detailer residual VRAM cleanup
-* **Features**: Same UI/behavior lineage as the LayerStyle original; keeps legacy workflows via class id `DisTorchPurgeVRAMV2`. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Enhanced in v2.2.0 with Nunchaku SDXL model support. Enhanced in v2.4.1 with dedicated **`HSWQ`** purge pipeline (PinCache drain, PromptExecutor/SEGS in-place clear, HostUnregister, `comfy_kitchen` CUDA workspace reset). Supports SeedVR2 DiT/VAE, Qwen3-VL, Nunchaku (FLUX/Z-Image/Qwen-Image/SDXL), and HSWQ INT8 residual cleanup.
+* **Description**: Distortch suite node **General Purge VRAM V2** (formerly LayerStyle `LayerUtility: Purge VRAM V2`; class id `DisTorchPurgeVRAMV2`) with enhanced model unloading, SeedVR2 / Qwen3-VL / Nunchaku purging, and (v2.4.1) an **`HSWQ`** toggle for full HSWQ VRAM purge
+* **Features**: Same UI/behavior lineage as the LayerStyle original; keeps legacy workflows via class id `DisTorchPurgeVRAMV2`. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Enhanced in v2.2.0 with Nunchaku SDXL model support. Enhanced in v2.4.1 with dedicated **`HSWQ`** purge pipeline (PinCache drain, PromptExecutor/SEGS in-place clear, HostUnregister, `comfy_kitchen` CUDA workspace reset). Supports SeedVR2 DiT/VAE, Qwen3-VL, Nunchaku (FLUX/Z-Image/Qwen-Image/SDXL), and HSWQ purge.
 * **Input**: Any data type (ANY) passthrough
 * **Options**:  
    * `purge_cache`: Run `gc.collect()`, flush CUDA caches, call `torch.cuda.ipc_collect()`  
@@ -98,10 +98,10 @@ This is a completely original implementation designed specifically for Distorch 
      * Searches in sys.modules, ComfyUI current_loaded_models, and gc.get_objects()
      * Clears cache and temporary data attributes (v2.2.0)
      * Handles NunchakuSDXL wrapper class with diffusion_model access (v2.2.0)
-   * `HSWQ`: Clear HSWQ INT8 / Batched Detailer residual GPU (and related host) memory (v2.4.1)
+   * `HSWQ`: Purge HSWQ residual GPU (and related host) memory — whole HSWQ path, not INT8-only (v2.4.1)
      * Force-imports and drains HSWQ PinCache; clears PromptExecutor / SEGS caches in-place (does not call `reset()` mid-prompt)
      * Releases PINNED_MEMORY via HostUnregister where applicable
-     * After core cleanup, resets `comfy_kitchen` CUDA workspace / empty-tensor caches (Method **2c**) so INT8 GEMM still works after purge+reload
+     * After core cleanup, resets `comfy_kitchen` CUDA workspace / empty-tensor caches (Method **2c**) so reload (including INT8 GEMM) still works after purge
      * UI label is **`HSWQ`**; legacy workflow kwargs `"HSWQ INT8"` remain accepted
 * **Enhancements in v1.2.0**:
   * More aggressive model unloading with proper error handling
@@ -124,11 +124,11 @@ This is a completely original implementation designed specifically for Distorch 
   * Improved VRAM release for Nunchaku SDXL models (approximately 2.5GB)
   * Preserves model structure while clearing top-level parameters only
 * **Enhancements in v2.4.1**:
-  * Dedicated **`HSWQ`** toggle for HSWQ INT8 + Batched Detailer residual cleanup
+  * Dedicated **`HSWQ`** toggle for full HSWQ VRAM purge
   * PinCache force-import/drain, PromptExecutor/SEGS in-place clear, HostUnregister path
   * Method **2c** `comfy_kitchen` CUDA workspace / empty-tensor cache reset after core purge
   * Fallback `nodes/purge_vram.py` kept in sync with the root node
-* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.2.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing. Enhanced in v2.4.1 because HSWQ INT8 / Detailer leftovers are not fully recovered by generic ComfyUI unload or DistTorch general purge.
+* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.2.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing. Enhanced in v2.4.1 because HSWQ leftovers are not fully recovered by generic ComfyUI unload or DistTorch general purge.
 
 #### Memory Manager (Advanced)
 
