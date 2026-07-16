@@ -37,7 +37,7 @@ class DisTorchPurgeVRAMV2:
                 "purge_qwen3vl_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Qwen3-VL models from GPU memory"}),
                 "purge_nunchaku_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory"}),
                 "HSWQ": ("BOOLEAN", {"default": False, "tooltip": "Purge HSWQ residual VRAM (whole HSWQ path: models, PinCache, Detailer caches)"}),
-                "Ollama": ("BOOLEAN", {"default": False, "tooltip": "Unload all models held by comfyui-ollama / Ollama server (keep_alive=0) and clear chat sessions"}),
+                "Ollama": ("BOOLEAN", {"default": False, "tooltip": "Full purge of Ollama VRAM used by comfyui-ollama and comfyui-ollama-describer: unload every loaded model until /api/ps is empty (generate+chat keep_alive=0, ollama stop), clear CHAT_SESSIONS/saved_context, wipe saved_context files"}),
             }
         }
 
@@ -2691,30 +2691,140 @@ class DisTorchPurgeVRAMV2:
                 import traceback
                 print(f"HSWQ INT8: Traceback: {traceback.format_exc()}")
 
-        # Purge comfyui-ollama / Ollama server VRAM (models live on the Ollama process, not in Comfy torch)
+        # Purge Ollama VRAM for comfyui-ollama + comfyui-ollama-describer.
+        # Both packs talk to the external Ollama server (no in-process torch models).
+        # describer defaults keep_model_alive=-1 (indefinite load) — must empty /api/ps.
         if purge_ollama:
             try:
-                print("Ollama: Starting purge process...")
+                print("Ollama: Starting FULL purge (zero residual; includes comfyui-ollama-describer)...")
                 import json
+                import shutil
+                import subprocess
+                import time
                 import urllib.error
                 import urllib.request
+
+                def _is_comfyui_ollama_module(mod_name: str) -> bool:
+                    n = str(mod_name).replace("\\", "/").lower()
+                    return (
+                        "compfyuiollama" in n
+                        or "comfyui-ollama" in n
+                        or "comfyui_ollama" in n
+                        or "ollama-describer" in n
+                        or "ollama_describer" in n
+                        or (n.endswith("deprecated_nodes") and "ollama" in n)
+                    )
+
+                def _normalize_ollama_url(host: str) -> str:
+                    host = str(host).strip().rstrip("/")
+                    if not host:
+                        return ""
+                    if not host.startswith("http"):
+                        host = "http://" + host
+                    return host.rstrip("/")
 
                 def _ollama_urls() -> list:
                     urls = []
                     env_host = os.environ.get("OLLAMA_HOST") or os.environ.get("OLLAMA_BASE_URL")
                     if env_host:
-                        host = str(env_host).strip()
-                        if host and not host.startswith("http"):
-                            host = "http://" + host
-                        if host:
-                            urls.append(host.rstrip("/"))
+                        u = _normalize_ollama_url(env_host)
+                        if u:
+                            urls.append(u)
+                    # Harvest URLs from loaded ollama custom-node modules / node state
+                    for mod_name, mod in list(sys.modules.items()):
+                        if mod is None or not _is_comfyui_ollama_module(mod_name):
+                            continue
+                        print(f"Ollama: scanning module {mod_name}")
+                        for attr in ("DEFAULT_URL", "OLLAMA_URL", "url", "base_url", "api_host"):
+                            v = getattr(mod, attr, None)
+                            if isinstance(v, str) and ("http://" in v or "https://" in v or "11434" in v):
+                                u = _normalize_ollama_url(v)
+                                if u:
+                                    urls.append(u)
+                        # comfyui-ollama-describer: class INPUT_TYPES defaults for api_host
+                        for cls_name in (
+                            "OllamaImageCaptioner",
+                            "OllamaImageDescriber",
+                            "OllamaTextDescriber",
+                            "OllamaConnectivityV2",
+                            "OllamaGenerateV2",
+                        ):
+                            cls = getattr(mod, cls_name, None)
+                            if cls is None or not hasattr(cls, "INPUT_TYPES"):
+                                continue
+                            try:
+                                spec = cls.INPUT_TYPES()
+                                required = (spec or {}).get("required") or {}
+                                for key in ("api_host", "url"):
+                                    entry = required.get(key)
+                                    if (
+                                        isinstance(entry, tuple)
+                                        and len(entry) >= 2
+                                        and isinstance(entry[1], dict)
+                                    ):
+                                        default = entry[1].get("default")
+                                        if isinstance(default, str) and default.strip():
+                                            u = _normalize_ollama_url(default)
+                                            if u:
+                                                urls.append(u)
+                            except Exception:
+                                pass
+                    try:
+                        for obj in gc.get_objects():
+                            try:
+                                if not hasattr(obj, "__class__"):
+                                    continue
+                                cname = type(obj).__name__
+                                # Client from ollama package (used by both packs)
+                                if cname == "Client" and hasattr(obj, "host"):
+                                    v = getattr(obj, "host", None)
+                                    if isinstance(v, str) and v.strip():
+                                        u = _normalize_ollama_url(v)
+                                        if u:
+                                            urls.append(u)
+                                if "Ollama" not in cname and "ollama" not in cname.lower():
+                                    if not (cname == "OllamaUtil"):
+                                        continue
+                                # describer uses api_host; comfyui-ollama uses url
+                                for attr in ("url", "_url", "host", "base_url", "api_host"):
+                                    v = getattr(obj, attr, None)
+                                    if isinstance(v, str) and v.strip():
+                                        u = _normalize_ollama_url(v)
+                                        if u:
+                                            urls.append(u)
+                                # Nested client.host on OllamaUtil
+                                client = getattr(obj, "client", None)
+                                if client is not None:
+                                    for attr in ("host", "base_url", "url"):
+                                        v = getattr(client, attr, None)
+                                        if isinstance(v, str) and v.strip():
+                                            u = _normalize_ollama_url(v)
+                                            if u:
+                                                urls.append(u)
+                                # OllamaConnectivityV2 returns dict via execute; instances may stash meta
+                                for attr in ("saved_meta", "meta", "connectivity"):
+                                    bag = getattr(obj, attr, None)
+                                    if isinstance(bag, dict):
+                                        u = bag.get("url") or bag.get("api_host")
+                                        if not u and isinstance(bag.get("connectivity"), dict):
+                                            u = bag["connectivity"].get("url") or bag["connectivity"].get(
+                                                "api_host"
+                                            )
+                                        if isinstance(u, str) and u.strip():
+                                            nu = _normalize_ollama_url(u)
+                                            if nu:
+                                                urls.append(nu)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        print(f"Ollama: URL harvest via gc skipped: {e}")
                     urls.append("http://127.0.0.1:11434")
                     urls.append("http://localhost:11434")
-                    # Deduplicate while preserving order
                     seen = set()
                     out = []
                     for u in urls:
-                        if u not in seen:
+                        u = str(u).rstrip("/")
+                        if u and u not in seen:
                             seen.add(u)
                             out.append(u)
                     return out
@@ -2736,15 +2846,12 @@ class DisTorchPurgeVRAMV2:
                     names = []
                     if payload is None:
                         return names
-                    models = None
                     if isinstance(payload, dict):
                         models = payload.get("models")
                     elif isinstance(payload, list):
                         models = payload
                     else:
                         models = getattr(payload, "models", None)
-                    if models is None:
-                        return names
                     for m in models or []:
                         name = None
                         if isinstance(m, dict):
@@ -2753,120 +2860,265 @@ class DisTorchPurgeVRAMV2:
                             name = getattr(m, "model", None) or getattr(m, "name", None)
                         if name:
                             names.append(str(name))
-                    return names
+                    # unique, stable
+                    seen = set()
+                    out = []
+                    for n in names:
+                        if n not in seen:
+                            seen.add(n)
+                            out.append(n)
+                    return out
 
-                def _unload_via_http(base_url: str) -> int:
-                    unloaded = 0
+                def _ps_names(base_url: str) -> list:
                     ps_url = base_url.rstrip("/") + "/api/ps"
                     try:
-                        payload = _http_json("GET", ps_url, None, timeout=10.0)
+                        return _model_names_from_ps(_http_json("GET", ps_url, None, timeout=10.0))
                     except Exception as e:
                         print(f"Ollama: GET {ps_url} failed: {e}")
-                        return 0
-                    names = _model_names_from_ps(payload)
-                    print(f"Ollama: {base_url} loaded models={names if names else '(none)'}")
-                    for name in names:
-                        try:
-                            _http_json(
-                                "POST",
-                                base_url.rstrip("/") + "/api/generate",
-                                {"model": name, "prompt": "", "keep_alive": 0},
-                                timeout=120.0,
-                            )
-                            unloaded += 1
-                            print(f"Ollama: Unloaded via keep_alive=0: {name}")
-                        except Exception as e:
-                            print(f"Ollama: unload failed for {name}: {e}")
-                    return unloaded
+                        return []
 
-                def _unload_via_ollama_client(base_url: str) -> int:
-                    unloaded = 0
+                def _unload_one_http(base_url: str, name: str) -> None:
+                    root = base_url.rstrip("/")
+                    # Official unload: empty prompt/messages + keep_alive 0 (int and "0"), stream false
+                    bodies_gen = (
+                        {"model": name, "prompt": "", "keep_alive": 0, "stream": False},
+                        {"model": name, "keep_alive": 0, "stream": False},
+                        {"model": name, "prompt": "", "keep_alive": "0", "stream": False},
+                    )
+                    for body in bodies_gen:
+                        try:
+                            _http_json("POST", root + "/api/generate", body, timeout=120.0)
+                            print(f"Ollama: /api/generate keep_alive=0 -> {name}")
+                            break
+                        except Exception as e:
+                            print(f"Ollama: /api/generate unload try failed for {name}: {e}")
+                    bodies_chat = (
+                        {"model": name, "messages": [], "keep_alive": 0, "stream": False},
+                        {"model": name, "messages": [], "keep_alive": "0", "stream": False},
+                    )
+                    for body in bodies_chat:
+                        try:
+                            _http_json("POST", root + "/api/chat", body, timeout=120.0)
+                            print(f"Ollama: /api/chat keep_alive=0 -> {name}")
+                            break
+                        except Exception as e:
+                            print(f"Ollama: /api/chat unload try failed for {name}: {e}")
+
+                def _unload_one_client(client, name: str) -> None:
+                    for kwargs in (
+                        {"model": name, "prompt": "", "keep_alive": 0},
+                        {"model": name, "prompt": "", "keep_alive": "0"},
+                    ):
+                        try:
+                            client.generate(**kwargs)
+                            print(f"Ollama: Client.generate keep_alive=0 -> {name}")
+                            break
+                        except Exception as e:
+                            print(f"Ollama: Client.generate failed for {name}: {e}")
+                    if hasattr(client, "chat") and callable(client.chat):
+                        for kwargs in (
+                            {"model": name, "messages": [], "keep_alive": 0},
+                            {"model": name, "messages": [], "keep_alive": "0"},
+                        ):
+                            try:
+                                client.chat(**kwargs)
+                                print(f"Ollama: Client.chat keep_alive=0 -> {name}")
+                                break
+                            except Exception as e:
+                                print(f"Ollama: Client.chat failed for {name}: {e}")
+
+                def _ollama_stop_cli(name: str) -> None:
+                    try:
+                        r = subprocess.run(
+                            ["ollama", "stop", name],
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                            shell=False,
+                        )
+                        print(
+                            f"Ollama: CLI stop {name} rc={r.returncode} "
+                            f"stdout={(r.stdout or '').strip()[:200]} "
+                            f"stderr={(r.stderr or '').strip()[:200]}"
+                        )
+                    except FileNotFoundError:
+                        print("Ollama: CLI `ollama` not on PATH (skipped)")
+                    except Exception as e:
+                        print(f"Ollama: CLI stop failed for {name}: {e}")
+
+                def _purge_server_until_empty(base_url: str, max_rounds: int = 8) -> tuple:
+                    """Return (unload_attempts, residual_names). residual must be [] for success."""
+                    attempts = 0
+                    client = None
                     try:
                         from ollama import Client
-                    except Exception as e:
-                        print(f"Ollama: ollama Client import skipped: {e}")
-                        return 0
-                    try:
+
                         client = Client(host=base_url)
                     except Exception as e:
-                        print(f"Ollama: Client({base_url}) failed: {e}")
-                        return 0
-                    names = []
-                    try:
-                        if hasattr(client, "ps") and callable(client.ps):
-                            names = _model_names_from_ps(client.ps())
-                    except Exception as e:
-                        print(f"Ollama: client.ps() failed: {e}")
-                    if not names:
-                        return 0
-                    print(f"Ollama: Client {base_url} loaded models={names}")
-                    for name in names:
-                        try:
-                            client.generate(model=name, prompt="", keep_alive=0)
-                            unloaded += 1
-                            print(f"Ollama: Client unloaded: {name}")
-                        except Exception as e:
-                            print(f"Ollama: Client unload failed for {name}: {e}")
-                    return unloaded
+                        print(f"Ollama: Client optional ({base_url}): {e}")
+
+                    residual = _ps_names(base_url)
+                    print(f"Ollama: {base_url} initial loaded={residual if residual else '(none)'}")
+                    for round_i in range(1, max_rounds + 1):
+                        residual = _ps_names(base_url)
+                        if not residual and client is not None and hasattr(client, "ps"):
+                            try:
+                                residual = _model_names_from_ps(client.ps())
+                            except Exception:
+                                pass
+                        if not residual:
+                            print(f"Ollama: {base_url} EMPTY after round {round_i - 1} (verified /api/ps)")
+                            return attempts, []
+                        print(f"Ollama: {base_url} round {round_i}/{max_rounds} still loaded={residual}")
+                        for name in list(residual):
+                            attempts += 1
+                            _unload_one_http(base_url, name)
+                            if client is not None:
+                                _unload_one_client(client, name)
+                            _ollama_stop_cli(name)
+                        time.sleep(0.35)
+                    residual = _ps_names(base_url)
+                    if residual:
+                        print(f"Ollama: WARNING residual still loaded on {base_url}: {residual}")
+                    return attempts, residual
 
                 total_unloaded = 0
+                residual_all = []
                 for base in _ollama_urls():
                     print(f"Ollama: Purging server at {base}...")
-                    n = _unload_via_http(base)
-                    if n == 0:
-                        n = _unload_via_ollama_client(base)
+                    n, residual = _purge_server_until_empty(base)
                     total_unloaded += n
+                    for r in residual:
+                        if r not in residual_all:
+                            residual_all.append(r)
 
-                # Clear comfyui-ollama in-process chat/context state (CPU only; complements server unload)
+                # --- Comfy-side comfyui-ollama state: leave nothing ---
                 sessions_cleared = 0
                 context_cleared = 0
+                files_wiped = 0
+                instances_cleared = 0
+
                 for mod_name, mod in list(sys.modules.items()):
-                    if mod is None:
-                        continue
-                    n = str(mod_name).replace("\\", "/")
-                    if "CompfyuiOllama" not in n and "comfyui-ollama" not in n and "comfyui_ollama" not in n:
+                    if mod is None or not _is_comfyui_ollama_module(mod_name):
                         continue
                     try:
                         bag = getattr(mod, "CHAT_SESSIONS", None)
-                        if isinstance(bag, dict) and bag:
+                        if isinstance(bag, dict):
+                            for _sid, sess in list(bag.items()):
+                                try:
+                                    msgs = getattr(sess, "messages", None)
+                                    if isinstance(msgs, list):
+                                        msgs.clear()
+                                    if hasattr(sess, "model"):
+                                        setattr(sess, "model", "")
+                                except Exception:
+                                    pass
                             sessions_cleared += len(bag)
                             bag.clear()
                             print(f"Ollama: Cleared CHAT_SESSIONS via {mod_name} entries={sessions_cleared}")
                     except Exception as e:
                         print(f"Ollama: CHAT_SESSIONS clear failed ({mod_name}): {e}")
-                    try:
-                        # deprecated_nodes.OllamaGenerateAdvance.saved_context (class attr)
-                        for attr in ("OllamaGenerateAdvance", "OllamaGenerate", "OllamaVision"):
+
+                    for attr in (
+                        "OllamaGenerateAdvance",
+                        "OllamaGenerate",
+                        "OllamaVision",
+                        "OllamaGenerateV2",
+                        "OllamaChat",
+                        "OllamaSaveContext",
+                        "OllamaLoadContext",
+                    ):
+                        try:
                             cls = getattr(mod, attr, None)
                             if cls is None:
                                 continue
                             if hasattr(cls, "saved_context"):
                                 setattr(cls, "saved_context", None)
                                 context_cleared += 1
-                    except Exception as e:
-                        print(f"Ollama: saved_context clear failed ({mod_name}): {e}")
+                        except Exception as e:
+                            print(f"Ollama: class {attr} clear failed ({mod_name}): {e}")
 
-                # Also walk deprecated_nodes module by name
-                for mod_name, mod in list(sys.modules.items()):
-                    if mod is None or "deprecated_nodes" not in str(mod_name):
-                        continue
-                    if "ollama" not in str(mod_name).lower() and "Ollama" not in str(mod_name):
-                        # custom_nodes.comfyui-ollama.deprecated_nodes
-                        if "comfyui" not in str(mod_name).lower():
-                            continue
+                    # Wipe on-disk saved_context artifacts under the custom node (keep .keep only)
                     try:
-                        cls = getattr(mod, "OllamaGenerateAdvance", None)
-                        if cls is not None and hasattr(cls, "saved_context"):
-                            setattr(cls, "saved_context", None)
-                            context_cleared += 1
-                            print(f"Ollama: Cleared OllamaGenerateAdvance.saved_context via {mod_name}")
-                    except Exception:
-                        pass
+                        mod_file = getattr(mod, "__file__", None)
+                        if mod_file:
+                            base_dir = os.path.dirname(os.path.realpath(mod_file))
+                            ctx_dir = os.path.join(base_dir, "saved_context")
+                            if os.path.isdir(ctx_dir):
+                                for fn in os.listdir(ctx_dir):
+                                    if fn == ".keep":
+                                        continue
+                                    path = os.path.join(ctx_dir, fn)
+                                    try:
+                                        if os.path.isfile(path) or os.path.islink(path):
+                                            os.remove(path)
+                                            files_wiped += 1
+                                        elif os.path.isdir(path):
+                                            shutil.rmtree(path)
+                                            files_wiped += 1
+                                    except Exception as e:
+                                        print(f"Ollama: wipe file failed {path}: {e}")
+                                print(f"Ollama: wiped saved_context dir files via {mod_name} count={files_wiped}")
+                    except Exception as e:
+                        print(f"Ollama: saved_context dir wipe failed ({mod_name}): {e}")
+
+                # Instance-level saved_context / message buffers on live Ollama node objects
+                try:
+                    for obj in gc.get_objects():
+                        try:
+                            if not hasattr(obj, "__class__"):
+                                continue
+                            cname = type(obj).__name__
+                            if "Ollama" not in cname:
+                                continue
+                            changed = False
+                            if hasattr(obj, "saved_context"):
+                                setattr(obj, "saved_context", None)
+                                changed = True
+                            for attr in ("messages", "context", "history", "chat_history"):
+                                if hasattr(obj, attr):
+                                    val = getattr(obj, attr)
+                                    if isinstance(val, list):
+                                        val.clear()
+                                        changed = True
+                                    elif val is not None and attr != "messages":
+                                        try:
+                                            setattr(obj, attr, None)
+                                            changed = True
+                                        except Exception:
+                                            pass
+                            if changed:
+                                instances_cleared += 1
+                        except Exception:
+                            pass
+                    if instances_cleared:
+                        print(f"Ollama: Cleared instance state on {instances_cleared} Ollama objects")
+                except Exception as e:
+                    print(f"Ollama: gc instance sweep failed: {e}")
+
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
+
+                # Final verify every known URL
+                for base in _ollama_urls():
+                    left = _ps_names(base)
+                    if left:
+                        print(f"Ollama: FINAL VERIFY FAIL {base} still loaded={left}")
+                        for x in left:
+                            if x not in residual_all:
+                                residual_all.append(x)
+                    else:
+                        print(f"Ollama: FINAL VERIFY OK {base} loaded=(none)")
 
                 print(
-                    f"Ollama: Done — unloaded={total_unloaded}, "
+                    f"Ollama: Done — unload_attempts={total_unloaded}, "
                     f"sessions_cleared={sessions_cleared}, "
-                    f"context_attrs_cleared={context_cleared}"
+                    f"context_attrs_cleared={context_cleared}, "
+                    f"files_wiped={files_wiped}, "
+                    f"instances_cleared={instances_cleared}, "
+                    f"residual={residual_all if residual_all else '(none)'}"
                 )
             except Exception as e:
                 print(f"Ollama: Error purging: {e}")
