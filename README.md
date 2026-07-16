@@ -11,7 +11,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, Nunchaku models (FLUX/Z-Image/Qwen-Image), and HSWQ. Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
+**ComfyUI-VRAM-Manager** (formerly ComfyUI-DistorchMemoryManager) is an independent memory management custom node for ComfyUI. Provides Distorch memory management functionality for efficient GPU/CPU memory handling. Supports purging of SeedVR2, Qwen3-VL, Nunchaku models (FLUX/Z-Image/Qwen-Image), HSWQ, and Ollama server VRAM. Includes Model Patch Memory Cleaner for ModelPatchLoader workflows. Auto-detects non-PyTorch VRAM usage via NVML to prevent OOM errors in multi-process environments.
 
 ## Overview
 
@@ -66,14 +66,14 @@ This is a completely original implementation designed specifically for Distorch 
   * Safely unloads model patches from VRAM
   * Performs cleanup_models_gc() to prevent memory leaks
 
-#### General Purge VRAM V2 (v1.10, Enhanced in v1.2.0, v2.0.0, v2.2.0, v2.4.1)
+#### General Purge VRAM V2 (v1.10, Enhanced in v1.2.0, v2.0.0, v2.2.0, v2.4.1, v2.4.2)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/pvram2.png" width="400">
 </p>
 
-* **Description**: Distortch suite node **General Purge VRAM V2** (formerly LayerStyle `LayerUtility: Purge VRAM V2`; class id `DisTorchPurgeVRAMV2`) with enhanced model unloading, SeedVR2 / Qwen3-VL / Nunchaku purging, and (v2.4.1) an **`HSWQ`** toggle for full HSWQ VRAM purge
-* **Features**: Same UI/behavior lineage as the LayerStyle original; keeps legacy workflows via class id `DisTorchPurgeVRAMV2`. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Enhanced in v2.2.0 with Nunchaku SDXL model support. Enhanced in v2.4.1 with dedicated **`HSWQ`** purge pipeline (PinCache drain, PromptExecutor/SEGS in-place clear, HostUnregister, `comfy_kitchen` CUDA workspace reset). Supports SeedVR2 DiT/VAE, Qwen3-VL, Nunchaku (FLUX/Z-Image/Qwen-Image/SDXL), and HSWQ purge.
+* **Description**: Distortch suite node **General Purge VRAM V2** (formerly LayerStyle `LayerUtility: Purge VRAM V2`; class id `DisTorchPurgeVRAMV2`) with enhanced model unloading, SeedVR2 / Qwen3-VL / Nunchaku purging, (v2.4.1) an **`HSWQ`** toggle for full HSWQ VRAM purge, and (v2.4.2) an **`Ollama`** toggle below **`HSWQ`** for zero-residual Ollama server VRAM purge
+* **Features**: Same UI/behavior lineage as the LayerStyle original; keeps legacy workflows via class id `DisTorchPurgeVRAMV2`. Enhanced in v1.2.0 with more aggressive model unloading and improved error handling. Enhanced in v2.0.0 with Qwen3-VL and Nunchaku model purging support. Enhanced in v2.2.0 with Nunchaku SDXL model support. Enhanced in v2.4.1 with dedicated **`HSWQ`** purge pipeline (PinCache drain, PromptExecutor/SEGS in-place clear, HostUnregister, `comfy_kitchen` CUDA workspace reset). Enhanced in v2.4.2 with **`Ollama`** purge for **comfyui-ollama** and **comfyui-ollama-describer** (including describer's default `keep_model_alive=-1`). Supports SeedVR2 DiT/VAE, Qwen3-VL, Nunchaku (FLUX/Z-Image/Qwen-Image/SDXL), HSWQ, and Ollama server unload.
 * **Input**: Any data type (ANY) passthrough
 * **Options**:  
    * `purge_cache`: Run `gc.collect()`, flush CUDA caches, call `torch.cuda.ipc_collect()`  
@@ -103,6 +103,12 @@ This is a completely original implementation designed specifically for Distorch 
      * Releases PINNED_MEMORY via HostUnregister where applicable
      * After core cleanup, resets `comfy_kitchen` CUDA workspace / empty-tensor caches (Method **2c**) so reload (including INT8 GEMM) still works after purge
      * UI label is **`HSWQ`**; legacy workflow kwargs `"HSWQ INT8"` remain accepted
+   * `Ollama`: Purge Ollama server VRAM loaded by **comfyui-ollama** and **comfyui-ollama-describer** (v2.4.2)
+     * Toggle appears **directly below `HSWQ`** in the node UI (see screenshot above)
+     * Targets describer's default `keep_model_alive=-1` (model stays loaded until explicitly unloaded)
+     * Harvests `api_host` / `url` from both custom-node packs; loops `GET /api/ps` until empty
+     * Sends `/api/generate` and `/api/chat` with `keep_alive=0`; runs `ollama stop`; Client API fallback when available
+     * Clears in-process `CHAT_SESSIONS` / `saved_context`; deletes `saved_context/` files; final `/api/ps` verification
 * **Enhancements in v1.2.0**:
   * More aggressive model unloading with proper error handling
   * None checks and callable() checks for all method calls
@@ -128,7 +134,13 @@ This is a completely original implementation designed specifically for Distorch 
   * PinCache force-import/drain, PromptExecutor/SEGS in-place clear, HostUnregister path
   * Method **2c** `comfy_kitchen` CUDA workspace / empty-tensor cache reset after core purge
   * Fallback `nodes/purge_vram.py` kept in sync with the root node
-* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.2.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing. Enhanced in v2.4.1 because HSWQ leftovers are not fully recovered by generic ComfyUI unload or DistTorch general purge.
+* **Enhancements in v2.4.2**:
+  * New **`Ollama`** toggle below **`HSWQ`** on DisTorchPurgeVRAMV2
+  * Zero-residual Ollama purge for **comfyui-ollama** and **comfyui-ollama-describer**
+  * `/api/ps` loop until empty, `keep_alive=0` on generate/chat, `ollama stop`, Client fallback
+  * Clears `CHAT_SESSIONS`, `saved_context`, and on-disk `saved_context/` files
+  * Fallback `nodes/purge_vram.py` kept in sync with the root node
+* **Reason**: The original LayerStyle node disappeared upstream, so we duplicated it here to keep older workflows alive. Enhanced in v1.2.0 to provide better memory management. SeedVR2 support added to handle SeedVR2's independent model caching system. Enhanced in v2.0.0 to support Qwen3-VL and Nunchaku models, which are not managed by ComfyUI's standard model_management. Enhanced in v2.2.0 to support Nunchaku SDXL models, which require special handling due to their wrapper class structure and need for cache clearing. Enhanced in v2.4.1 because HSWQ leftovers are not fully recovered by generic ComfyUI unload or DistTorch general purge. Enhanced in v2.4.2 because Ollama models loaded via comfyui-ollama / comfyui-ollama-describer (especially with `keep_model_alive=-1`) are not released by standard ComfyUI or HSWQ purge alone.
 
 #### Memory Manager (Advanced)
 

@@ -11,7 +11,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager**（原 ComfyUI-DistorchMemoryManager）是 ComfyUI 的独立显存管理自定义节点。提供 Distorch 显存管理功能，高效处理 GPU/CPU 内存。支持清理 SeedVR2、Qwen3-VL、Nunchaku 模型（FLUX/Z-Image/Qwen-Image）以及 HSWQ。包含面向 ModelPatchLoader 工作流的 Model Patch Memory Cleaner。通过 NVML 自动检测非 PyTorch 的 VRAM 占用，在多进程环境下防止 OOM。
+**ComfyUI-VRAM-Manager**（原 ComfyUI-DistorchMemoryManager）是 ComfyUI 的独立显存管理自定义节点。提供 Distorch 显存管理功能，高效处理 GPU/CPU 内存。支持清理 SeedVR2、Qwen3-VL、Nunchaku 模型（FLUX/Z-Image/Qwen-Image）、HSWQ 以及 Ollama 服务端显存。包含面向 ModelPatchLoader 工作流的 Model Patch Memory Cleaner。通过 NVML 自动检测非 PyTorch 的 VRAM 占用，在多进程环境下防止 OOM。
 
 ## 概述
 
@@ -66,14 +66,14 @@
   * 安全地从 VRAM 卸载模型补丁
   * 执行 `cleanup_models_gc()` 防止内存泄漏
 
-#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 增强）
+#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 / v2.4.2 增强）
 
 <p align="center">
   <img src="../png/pvram2.png" width="400">
 </p>
 
-* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关，用于完整 HSWQ 显存清理
-* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）及 HSWQ 清理。
+* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关；v2.4.2 在 **`HSWQ`** 下方新增 **`Ollama`** 开关，用于零残留清理 Ollama 服务端显存
+* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。v2.4.2 增加 **`Ollama`** 清理，覆盖 **comfyui-ollama** 与 **comfyui-ollama-describer**（含 describer 默认 `keep_model_alive=-1`）。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）、HSWQ 及 Ollama 服务端卸载。
 * **输入**：任意类型 (ANY) 透传
 * **选项**：
    * `purge_cache`：执行 `gc.collect()`、刷新 CUDA 缓存、调用 `torch.cuda.ipc_collect()`
@@ -103,6 +103,12 @@
      * 适用时通过 HostUnregister 释放 PINNED_MEMORY
      * 核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存（Method **2c**），使 purge+reload（含 INT8 GEMM）仍可用
      * UI 标签为 **`HSWQ`**；仍接受旧工作流 kwargs `"HSWQ INT8"`
+   * `Ollama`：清理 **comfyui-ollama** 与 **comfyui-ollama-describer** 加载的 Ollama 服务端显存（v2.4.2）
+     * 节点 UI 中位于 **`HSWQ`** 正下方（见上方截图）
+     * 针对 describer 默认 `keep_model_alive=-1`（模型常驻直至显式卸载）
+     * 从两个自定义节点包收集 `api_host` / `url`；循环 `GET /api/ps` 直至为空
+     * 发送 `/api/generate` 与 `/api/chat` 且 `keep_alive=0`；执行 `ollama stop`；可用时走 Client API 回退
+     * 清空进程内 `CHAT_SESSIONS` / `saved_context`；删除 `saved_context/` 文件；最终 `/api/ps` 验证
 * **v1.2.0 增强**：
   * 更激进的模型卸载与完善错误处理
   * 对所有方法调用进行 None 与 callable 检查
@@ -128,7 +134,13 @@
   * PinCache 强制导入/排空、PromptExecutor/SEGS 就地清空、HostUnregister
   * Method **2c**：核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存
   * fallback `nodes/purge_vram.py` 与根目录节点同步
-* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。
+* **v2.4.2 增强**：
+  * DisTorchPurgeVRAMV2 新增 **`Ollama`** 开关（位于 **`HSWQ`** 下方）
+  * 零残留清理 **comfyui-ollama** 与 **comfyui-ollama-describer** 的 Ollama 显存
+  * `/api/ps` 循环至空、`keep_alive=0` 的 generate/chat、`ollama stop`、Client 回退
+  * 清空 `CHAT_SESSIONS`、`saved_context` 及磁盘 `saved_context/` 文件
+  * fallback `nodes/purge_vram.py` 与根目录节点同步
+* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。v2.4.2 针对 comfyui-ollama / comfyui-ollama-describer（尤其 `keep_model_alive=-1`）加载的 Ollama 模型无法被标准 ComfyUI 或 HSWQ 清理单独释放的问题。
 
 #### Memory Manager（高级）
 
