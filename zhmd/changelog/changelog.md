@@ -7,7 +7,7 @@
   </tr>
 </table>
 
-* **v2.4.2** – DisTorchPurgeVRAMV2：新增 **`Ollama`** 开关（位于 **`HSWQ`** 下方），完整清理 **comfyui-ollama** 与 **comfyui-ollama-describer**（describer 默认 `keep_model_alive=-1`）残留的 Ollama 显存：循环 `GET /api/ps` 至空，配合 `/api/generate` 与 `/api/chat` 的 `keep_alive=0`、`ollama stop`、Client 回退；从两个包收集 `api_host`/`url`；清空 `CHAT_SESSIONS` / `saved_context`；删除 `saved_context/` 文件；最终 `/api/ps` 验证。fallback `nodes/purge_vram.py` 与 root 同步。
+* **v2.4.2** – DisTorchPurgeVRAMV2：新增 **`Ollama`** 开关（位于 **`HSWQ`** 下方），完整清理 **comfyui-ollama** 与 **comfyui-ollama-describer**（describer 默认 `keep_model_alive=-1`）残留的 Ollama 显存：循环 `GET /api/ps` 至空，配合 `/api/generate` 与 `/api/chat` 的 `keep_alive=0`、`ollama stop`、Client 回退；从两个包收集 `api_host`/`url`；清空 `CHAT_SESSIONS` / `saved_context`；删除 `saved_context/` 文件；最终 `/api/ps` 验证。fallback `nodes/purge_vram.py` 与 root 同步。详见 [Release Notes v2.4.2](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/releases/tag/v2.4.2)。
 
 * **v2.4.1** – DisTorchPurgeVRAMV2 **HSWQ** 清理：回收完整 HSWQ 残留显存（PinCache 强制导入与排空、不在 prompt 中途调用 `reset()` 的 PromptExecutor/SEGS 就地清空、PINNED_MEMORY HostUnregister、gc 核清理）。Method **2c** 在核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存，使 purge+reload（含 INT8 GEMM）仍可用。UI 开关更名为 **`HSWQ`**（仍接受旧 kwargs `"HSWQ INT8"`）。fallback `nodes/purge_vram.py` 与 root 同步。详见 [Release Notes v2.4.1](https://github.com/ussoewwin/ComfyUI-DistorchMemoryManager/blob/main/zhmd/v2.4.1.md)。
 
