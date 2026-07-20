@@ -37,6 +37,7 @@ This is a completely original implementation designed specifically for Distorch 
 ##### Key Benefits & Features
 * **Zero Node Setup**: Operates entirely in the background at startup. No node placement in workflows, manual connections, or toggle switches are required.
 * **NVML-Powered Accuracy**: Utilizes the `pynvml` (NVIDIA Management Library) API to query real-time physical GPU memory status, ensuring perfect accuracy.
+* **Auto-updated dependency**: On every ComfyUI load (and via ComfyUI-Manager `install.py`), `nvidia-ml-py` is upgraded with `pip install -U` so the NVML binding stays current without a manual upgrade.
 * **Robust Multi-Process OOM Prevention**: Dynamically patches ComfyUI's internal VRAM headroom buffer on load by calculating the exact difference between system-wide physical GPU usage and PyTorch allocations.
 * **Optimized for iGPU/dGPU Multi-GPU Setups**:
   * Perfect for setups that offload Windows desktop rendering and browser acceleration to the CPU's integrated graphics (e.g., Ryzen 9 7900 built-in Radeon iGPU) and reserve the RTX GPU exclusively for CUDA workloads.

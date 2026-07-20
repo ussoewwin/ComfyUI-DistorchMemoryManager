@@ -107,11 +107,40 @@ def _install_sage_attention_noise_guard():
 _install_sage_attention_noise_guard()
 
 
+def _ensure_nvidia_ml_py_latest():
+    """
+    Auto-upgrade nvidia-ml-py (import name: pynvml) to the latest PyPI release.
+    Required for General Manage VRAM (v2.4.0); replaces manual `pip install -U nvidia-ml-py`.
+    Also invoked from install.py when ComfyUI-Manager installs/updates this node.
+    """
+    import subprocess
+
+    try:
+        print("[ComfyUI-VRAM-Manager] Ensuring nvidia-ml-py is latest...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "nvidia-ml-py"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            print(f"[ComfyUI-VRAM-Manager] WARNING: nvidia-ml-py upgrade failed: {err}")
+            return False
+        print("[ComfyUI-VRAM-Manager] nvidia-ml-py is up to date (or was upgraded).")
+        return True
+    except Exception as e:
+        print(f"[ComfyUI-VRAM-Manager] WARNING: nvidia-ml-py ensure error: {e}")
+        return False
+
+
 def _install_general_vram_management():
     """
     Startup patch: auto-detect non-PyTorch VRAM usage (browsers, other apps)
     via NVML and apply general manage VRAM patch to ComfyUI memory management at load time.
     """
+    _ensure_nvidia_ml_py_latest()
+
     try:
         import pynvml
         try:

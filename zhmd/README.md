@@ -37,6 +37,7 @@
 ##### 主要优势与特性
 * **零节点配置**：仅在启动时后台运行。无需在工作流中放置节点、手动连线或开关。
 * **NVML 精确检测**：使用 `pynvml`（NVIDIA Management Library）API 查询物理 GPU 内存实时状态。
+* **依赖自动更新**：每次加载 ComfyUI 时（以及通过 ComfyUI-Manager 的 `install.py`），以 `pip install -U` 升级 `nvidia-ml-py`，无需手动升级即可保持 NVML 绑定为最新。
 * **可靠的多进程 OOM 防护**：在加载时通过「系统物理占用 − PyTorch 分配」动态修补 ComfyUI 内部 VRAM 余量缓冲。
 * **针对 iGPU/dGPU 多 GPU 环境优化**：
   * 适合将 Windows 桌面渲染与浏览器加速交给 CPU 核显（如 Ryzen 9 7900 内置 Radeon iGPU），独显 RTX 专用于 CUDA 的场景。
