@@ -66,14 +66,14 @@
   * 安全地从 VRAM 卸载模型补丁
   * 执行 `cleanup_models_gc()` 防止内存泄漏
 
-#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 / v2.4.2 增强）
+#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 / v2.4.2 / v2.4.3 增强）
 
 <p align="center">
   <img src="../png/pvram2.png" width="400">
 </p>
 
-* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关；v2.4.2 在 **`HSWQ`** 下方新增 **`Ollama`** 开关，用于零残留清理 Ollama 服务端显存
-* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。v2.4.2 增加 **`Ollama`** 清理，覆盖 **comfyui-ollama** 与 **comfyui-ollama-describer**（含 describer 默认 `keep_model_alive=-1`）。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）、HSWQ 及 Ollama 服务端卸载。
+* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关；v2.4.2 在 **`HSWQ`** 下方新增 **`Ollama`** 开关，用于零残留清理 Ollama 服务端显存；v2.4.3 在 HSWQ Method **2c** 中额外清空 HSWQ **NVFP4** 运行时池 / CUDA graphs，避免 purge 后第二次 ConvRot NVFP4 生成出现 `quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`
+* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。v2.4.2 增加 **`Ollama`** 清理，覆盖 **comfyui-ollama** 与 **comfyui-ollama-describer**（含 describer 默认 `keep_model_alive=-1`）。v2.4.3 在 kitchen 重置之外，通过 `sys.modules` 扫描 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`；优先从 `nodes/purge_vram.py` 导入；日志前缀 `HSWQ INT8/NVFP4:`。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）、HSWQ（含 NVFP4）及 Ollama 服务端卸载。
 * **输入**：任意类型 (ANY) 透传
 * **选项**：
    * `purge_cache`：执行 `gc.collect()`、刷新 CUDA 缓存、调用 `torch.cuda.ipc_collect()`
@@ -98,11 +98,12 @@
      * 在 sys.modules、ComfyUI current_loaded_models、gc.get_objects() 中搜索
      * 清理 cache 与临时数据属性（v2.2.0）
      * 处理带 diffusion_model 的 NunchakuSDXL 包装类（v2.2.0）
-   * `HSWQ`：清理 HSWQ 残留 GPU（及相关主机）内存 — 面向完整 HSWQ 路径，非仅 INT8（v2.4.1）
+   * `HSWQ`：清理 HSWQ 残留 GPU（及相关主机）内存 — 面向完整 HSWQ 路径，非仅 INT8（v2.4.1；NVFP4 Method **2c** 见 v2.4.3）
      * 强制导入并排空 HSWQ PinCache；就地清空 PromptExecutor / SEGS 缓存（不在 prompt 中途调用 `reset()`）
      * 适用时通过 HostUnregister 释放 PINNED_MEMORY
      * 核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存（Method **2c**），使 purge+reload（含 INT8 GEMM）仍可用
-     * UI 标签为 **`HSWQ`**；仍接受旧工作流 kwargs `"HSWQ INT8"`
+     * （v2.4.3）kitchen 重置后，扫描 `sys.modules` 中的 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`，清空 HSWQ **NVFP4** 运行时池 / CUDA graphs
+     * UI 标签为 **`HSWQ`**；仍接受旧工作流 kwargs `"HSWQ INT8"`；日志前缀 `HSWQ INT8/NVFP4:`
    * `Ollama`：清理 **comfyui-ollama** 与 **comfyui-ollama-describer** 加载的 Ollama 服务端显存（v2.4.2）
      * 节点 UI 中位于 **`HSWQ`** 正下方（见上方截图）
      * 针对 describer 默认 `keep_model_alive=-1`（模型常驻直至显式卸载）
@@ -140,7 +141,11 @@
   * `/api/ps` 循环至空、`keep_alive=0` 的 generate/chat、`ollama stop`、Client 回退
   * 清空 `CHAT_SESSIONS`、`saved_context` 及磁盘 `saved_context/` 文件
   * fallback `nodes/purge_vram.py` 与根目录节点同步
-* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。v2.4.2 针对 comfyui-ollama / comfyui-ollama-describer（尤其 `keep_model_alive=-1`）加载的 Ollama 模型无法被标准 ComfyUI 或 HSWQ 清理单独释放的问题。
+* **v2.4.3 增强**：
+  * HSWQ Method **2c** 在 kitchen 重置之外，通过 `sys.modules` 扫描 + `clear_nvfp4_runtime_pools()` 清空 HSWQ **NVFP4** 运行时池 / CUDA graphs
+  * 避免 purge 后第二次 ConvRot NVFP4 生成失败（`quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`）
+  * 优先从 `nodes/purge_vram.py` 导入 `DisTorchPurgeVRAMV2`；日志前缀 `HSWQ INT8/NVFP4:`
+* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。v2.4.2 针对 comfyui-ollama / comfyui-ollama-describer（尤其 `keep_model_alive=-1`）加载的 Ollama 模型无法被标准 ComfyUI 或 HSWQ 清理单独释放的问题。v2.4.3 针对仅 kitchen Method **2c** 无法清掉的 HSWQ **NVFP4** 运行时池 / CUDA graphs，purge 后下一次 ConvRot NVFP4 生成会失败的问题。
 
 #### Memory Manager（高级）
 
