@@ -183,14 +183,16 @@ class AnyType(str):
 any = AnyType("*")
 
 
-# Import Purge VRAM V2 node
+# Import Purge VRAM V2 node.
+# Prefer nodes.purge_vram (Method 2c clears HSWQ NVFP4 runtime pools after DistOrch
+# nuclear kill). Root purge_vram.py is legacy fallback only.
 try:
-    from .purge_vram import DisTorchPurgeVRAMV2
-    print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .purge_vram")
+    from .nodes.purge_vram import DisTorchPurgeVRAMV2
+    print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .nodes.purge_vram")
 except ImportError as e:
     try:
-        from .nodes.purge_vram import DisTorchPurgeVRAMV2
-        print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .nodes.purge_vram")
+        from .purge_vram import DisTorchPurgeVRAMV2
+        print("[ComfyUI-VRAM-Manager] Successfully imported DisTorchPurgeVRAMV2 from .purge_vram")
     except ImportError as e2:
         print(f"[ComfyUI-VRAM-Manager] WARNING: Failed to import DisTorchPurgeVRAMV2: {e2}")
         DisTorchPurgeVRAMV2 = None
