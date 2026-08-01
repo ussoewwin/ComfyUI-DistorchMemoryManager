@@ -2404,6 +2404,11 @@ class DisTorchPurgeVRAMV2:
                         return True
                     if getattr(module, "_hswq_int8_baked_uuid", None) is not None:
                         return True
+                    # Z Image Dynamic LoRA NVFP4 bake bookkeeping (separate from INT8).
+                    if getattr(module, "_hswq_zi_nvfp4_baked_keys", None):
+                        return True
+                    if getattr(module, "_hswq_zi_nvfp4_baked_uuid", None) is not None:
+                        return True
                     try:
                         for m in module.modules():
                             if (
@@ -2411,6 +2416,8 @@ class DisTorchPurgeVRAMV2:
                                 or getattr(m, "_hswq_nvfp4", False)
                                 or getattr(m, "_hswq_int8_convrot", False)
                                 or getattr(m, "_hswq_nvfp4_parity_H", None) is not None
+                                or getattr(m, "_hswq_zi_nvfp4_baked_keys", None)
+                                or getattr(m, "_hswq_zi_nvfp4_baked_uuid", None) is not None
                             ):
                                 return True
                     except Exception:
@@ -2525,6 +2532,10 @@ class DisTorchPurgeVRAMV2:
                             module._hswq_int8_baked_keys = None
                         if hasattr(module, "_hswq_int8_baked_uuid"):
                             module._hswq_int8_baked_uuid = None
+                        if hasattr(module, "_hswq_zi_nvfp4_baked_keys"):
+                            module._hswq_zi_nvfp4_baked_keys = None
+                        if hasattr(module, "_hswq_zi_nvfp4_baked_uuid"):
+                            module._hswq_zi_nvfp4_baked_uuid = None
                     except Exception:
                         pass
                     # ZI / ZIT ConvRot NVFP4 Comfy-parity: drop cached Hadamard + arms
