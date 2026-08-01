@@ -2208,37 +2208,99 @@ class DisTorchPurgeVRAMV2:
                     return freed_hint
 
                 def _reset_comfy_kitchen_cuda_caches() -> None:
-                    """Drop comfy_kitchen global CUDA buffers after nuclear tensor kill.
-
-                    Method 0s / Method 3 walk gc.get_objects() and replace storage on
-                    large CUDA tensors. That includes comfy_kitchen's cuBLAS workspace
-                    (4 MiB or 32 MiB uint8) which stays cached in
-                    ``_cublas_workspaces``. Model reload does not recreate it —
-                    get_cublas_workspace() returns the dead tensor →
-                    cublas_gemm_int8 sees PyCapsule instead of ndarray (2nd gen).
-                    """
+                    """Drop comfy_kitchen + HSWQ NVFP4 pools + ZI parity Hadamard after nuclear kill."""
                     try:
                         import comfy_kitchen.backends.cuda as ck_cuda
                     except Exception as e:
-                        print(f"HSWQ INT8: comfy_kitchen cuda import skipped: {e}")
-                        return
+                        print(f"HSWQ INT8/NVFP4: comfy_kitchen cuda import skipped: {e}")
+                        ck_cuda = None
                     cleared = []
-                    for attr in (
-                        "_cublas_workspaces",
-                        "_empty_cuda_tensors",
-                    ):
-                        bag = getattr(ck_cuda, attr, None)
-                        if isinstance(bag, dict) and bag:
-                            n = len(bag)
-                            bag.clear()
-                            cleared.append(f"{attr}={n}")
+                    if ck_cuda is not None:
+                        for attr in (
+                            "_cublas_workspaces",
+                            "_empty_cuda_tensors",
+                        ):
+                            bag = getattr(ck_cuda, attr, None)
+                            if isinstance(bag, dict) and bag:
+                                n = len(bag)
+                                bag.clear()
+                                cleared.append(f"{attr}={n}")
+                    for name, mod in list(__import__("sys").modules.items()):
+                        if mod is None:
+                            continue
+                        if not (
+                            name.endswith("nvfp4_runtime")
+                            or ".nvfp4_runtime" in name
+                        ):
+                            continue
+                        fn = getattr(mod, "clear_nvfp4_runtime_pools", None)
+                        if not callable(fn):
+                            continue
+                        try:
+                            fn()
+                            cleared.append("nvfp4_runtime_pools")
+                            print(
+                                "HSWQ INT8/NVFP4: Cleared HSWQ NVFP4 runtime pools / CUDA graphs"
+                            )
+                            break
+                        except Exception as e2:
+                            print(
+                                f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed ({name}): {e2}"
+                            )
+                    parity_cleared = 0
+                    for name, mod in list(__import__("sys").modules.items()):
+                        if mod is None:
+                            continue
+                        if "nvfp4_comfy_parity" not in name:
+                            continue
+                        fn = getattr(mod, "clear_nvfp4_parity_hadamard_caches", None)
+                        if not callable(fn):
+                            continue
+                        try:
+                            parity_cleared = int(fn() or 0)
+                            cleared.append(f"nvfp4_parity_H={parity_cleared}")
+                            print(
+                                "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
+                                f"Hadamard caches (n={parity_cleared})"
+                            )
+                            break
+                        except Exception as e2:
+                            print(
+                                f"HSWQ INT8/NVFP4: ZI NVFP4 parity Hadamard clear "
+                                f"failed ({name}): {e2}"
+                            )
+                    if parity_cleared == 0:
+                        try:
+                            for obj in gc.get_objects():
+                                try:
+                                    if not isinstance(obj, torch.nn.Module):
+                                        continue
+                                    if not hasattr(obj, "_hswq_nvfp4_parity_H"):
+                                        continue
+                                    try:
+                                        delattr(obj, "_hswq_nvfp4_parity_H")
+                                    except Exception:
+                                        obj._hswq_nvfp4_parity_H = None
+                                    parity_cleared += 1
+                                except Exception:
+                                    continue
+                            if parity_cleared:
+                                cleared.append(f"nvfp4_parity_H_gc={parity_cleared}")
+                                print(
+                                    "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
+                                    f"Hadamard via gc (n={parity_cleared})"
+                                )
+                        except Exception as e3:
+                            print(
+                                f"HSWQ INT8/NVFP4: ZI NVFP4 parity gc clear skipped: {e3}"
+                            )
                     if cleared:
                         print(
-                            "HSWQ INT8: Reset comfy_kitchen CUDA caches "
+                            "HSWQ INT8/NVFP4: Reset comfy_kitchen CUDA caches "
                             + ", ".join(cleared)
                         )
                     else:
-                        print("HSWQ INT8: comfy_kitchen CUDA caches already empty")
+                        print("HSWQ INT8/NVFP4: comfy_kitchen CUDA caches already empty")
 
                 def _force_unregister_comfy_pins() -> int:
                     """Unregister every cudaHostRegister tracked by ComfyUI PINNED_MEMORY."""
@@ -2307,7 +2369,7 @@ class DisTorchPurgeVRAMV2:
                     return cur if _is_real_nn(cur) else None
 
                 def _is_hswq_int8_nn(module) -> bool:
-                    """Strict: only real HSWQ INT8 UNet modules — no torch/_dynamo junk."""
+                    """True for HSWQ INT8 and/or NVFP4 (incl. ZI ConvRot) UNet modules."""
                     if module is None or not _is_real_nn(module):
                         return False
                     baked = getattr(module, "_hswq_int8_baked_keys", None)
@@ -2315,6 +2377,17 @@ class DisTorchPurgeVRAMV2:
                         return True
                     if getattr(module, "_hswq_int8_baked_uuid", None) is not None:
                         return True
+                    try:
+                        for m in module.modules():
+                            if (
+                                getattr(m, "_hswq_nvfp4_convrot", False)
+                                or getattr(m, "_hswq_nvfp4", False)
+                                or getattr(m, "_hswq_int8_convrot", False)
+                                or getattr(m, "_hswq_nvfp4_parity_H", None) is not None
+                            ):
+                                return True
+                    except Exception:
+                        pass
                     try:
                         for name, buf in module.named_buffers():
                             if not (name.endswith("comfy_quant") or name.endswith(".comfy_quant")):
@@ -2324,10 +2397,12 @@ class DisTorchPurgeVRAMV2:
                                 if raw.dtype == torch.uint8 and raw.numel() > 0:
                                     import json
                                     conf = json.loads(bytes(raw.tolist()).decode("utf-8", errors="ignore"))
-                                    if isinstance(conf, dict) and conf.get("format") == "int8_tensorwise":
-                                        return True
-                                    if isinstance(conf, dict) and "format" in conf:
-                                        return conf.get("format") == "int8_tensorwise"
+                                    if isinstance(conf, dict):
+                                        fmt = conf.get("format")
+                                        if fmt in ("int8_tensorwise", "nvfp4"):
+                                            return True
+                                        if "format" in conf:
+                                            continue
                             except Exception:
                                 pass
                             return True
@@ -2397,25 +2472,25 @@ class DisTorchPurgeVRAMV2:
 
                 def _kill_module_vram(module, label: str) -> int:
                     freed = 0
-                    print(f"HSWQ INT8: Killing module VRAM ({label}) type={type(module).__name__}")
+                    print(f"HSWQ INT8/NVFP4: Killing module VRAM ({label}) type={type(module).__name__}")
                     try:
                         if hasattr(module, "to") and callable(module.to):
                             try:
                                 module.to("cpu")
                             except Exception as e:
-                                print(f"HSWQ INT8: .to('cpu') warning ({label}): {e}")
+                                print(f"HSWQ INT8/NVFP4: .to('cpu') warning ({label}): {e}")
                     except Exception:
                         pass
                     try:
                         for _n, p in list(module.named_parameters()):
                             freed += _kill_tensor_storage(p)
                     except Exception as e:
-                        print(f"HSWQ INT8: param kill warning ({label}): {e}")
+                        print(f"HSWQ INT8/NVFP4: param kill warning ({label}): {e}")
                     try:
                         for _n, b in list(module.named_buffers()):
                             freed += _kill_tensor_storage(b)
                     except Exception as e:
-                        print(f"HSWQ INT8: buffer kill warning ({label}): {e}")
+                        print(f"HSWQ INT8/NVFP4: buffer kill warning ({label}): {e}")
                     try:
                         if hasattr(module, "_hswq_int8_baked_keys"):
                             module._hswq_int8_baked_keys = None
@@ -2423,7 +2498,25 @@ class DisTorchPurgeVRAMV2:
                             module._hswq_int8_baked_uuid = None
                     except Exception:
                         pass
-                    print(f"HSWQ INT8: Killed ~{freed / (1024 * 1024):.1f} MB CUDA storage ({label})")
+                    try:
+                        for m in module.modules():
+                            if hasattr(m, "_hswq_nvfp4_parity_H"):
+                                try:
+                                    h = getattr(m, "_hswq_nvfp4_parity_H", None)
+                                    if h is not None and torch.is_tensor(h):
+                                        freed += _kill_tensor_storage(h)
+                                except Exception:
+                                    pass
+                                try:
+                                    delattr(m, "_hswq_nvfp4_parity_H")
+                                except Exception:
+                                    try:
+                                        m._hswq_nvfp4_parity_H = None
+                                    except Exception:
+                                        pass
+                    except Exception as e:
+                        print(f"HSWQ INT8/NVFP4: NVFP4 parity_H kill warning ({label}): {e}")
+                    print(f"HSWQ INT8/NVFP4: Killed ~{freed / (1024 * 1024):.1f} MB CUDA storage ({label})")
                     return freed
 
                 def _unload_patcher(obj) -> int:

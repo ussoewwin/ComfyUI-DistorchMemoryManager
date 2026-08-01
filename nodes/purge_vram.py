@@ -2217,7 +2217,10 @@ class DisTorchPurgeVRAMV2:
                       dead tensor → ``cublas_gemm_int8`` PyCapsule (INT8 2nd gen)
                     - HSWQ NVFP4 ``_ACT_Q_POOL`` / ``_ROT_OUT_POOL`` / CUDA-graph
                       cache → dead qx/sx buffers → ``quantize_nvfp4`` PyCapsule
-                      (ConvRot NVFP4 2nd gen after DistOrch purge)
+                      (SDXL TC ConvRot NVFP4 2nd gen after DistOrch purge)
+                    - Z Image / ZIT Comfy-parity Hadamard cache
+                      (``_hswq_nvfp4_parity_H``) → dead ``H`` with matching
+                      device/dtype → online act rotate produces noise (2nd gen)
 
                     Model reload alone does not recreate those module-level pools.
                     """
@@ -2237,7 +2240,7 @@ class DisTorchPurgeVRAMV2:
                                 n = len(bag)
                                 bag.clear()
                                 cleared.append(f"{attr}={n}")
-                    # HSWQ NVFP4 act / GEMM pools — scan sys.modules (import path varies).
+                    # HSWQ NVFP4 TC act / GEMM pools — scan sys.modules (import path varies).
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
@@ -2259,6 +2262,57 @@ class DisTorchPurgeVRAMV2:
                         except Exception as e2:
                             print(
                                 f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed ({name}): {e2}"
+                            )
+                    # Z Image / ZIT ConvRot Comfy-parity Hadamard caches.
+                    parity_cleared = 0
+                    for name, mod in list(__import__("sys").modules.items()):
+                        if mod is None:
+                            continue
+                        if "nvfp4_comfy_parity" not in name:
+                            continue
+                        fn = getattr(mod, "clear_nvfp4_parity_hadamard_caches", None)
+                        if not callable(fn):
+                            continue
+                        try:
+                            parity_cleared = int(fn() or 0)
+                            cleared.append(f"nvfp4_parity_H={parity_cleared}")
+                            print(
+                                "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
+                                f"Hadamard caches (n={parity_cleared})"
+                            )
+                            break
+                        except Exception as e2:
+                            print(
+                                f"HSWQ INT8/NVFP4: ZI NVFP4 parity Hadamard clear "
+                                f"failed ({name}): {e2}"
+                            )
+                    if parity_cleared == 0:
+                        # Fallback when HSWQ loader module is not imported yet /
+                        # clear fn missing: drop attrs on live Modules via gc.
+                        try:
+                            import torch as _torch_parity
+                            for obj in gc.get_objects():
+                                try:
+                                    if not isinstance(obj, _torch_parity.nn.Module):
+                                        continue
+                                    if not hasattr(obj, "_hswq_nvfp4_parity_H"):
+                                        continue
+                                    try:
+                                        delattr(obj, "_hswq_nvfp4_parity_H")
+                                    except Exception:
+                                        obj._hswq_nvfp4_parity_H = None
+                                    parity_cleared += 1
+                                except Exception:
+                                    continue
+                            if parity_cleared:
+                                cleared.append(f"nvfp4_parity_H_gc={parity_cleared}")
+                                print(
+                                    "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
+                                    f"Hadamard via gc (n={parity_cleared})"
+                                )
+                        except Exception as e3:
+                            print(
+                                f"HSWQ INT8/NVFP4: ZI NVFP4 parity gc clear skipped: {e3}"
                             )
                     if cleared:
                         print(
@@ -2335,7 +2389,14 @@ class DisTorchPurgeVRAMV2:
                     return cur if _is_real_nn(cur) else None
 
                 def _is_hswq_int8_nn(module) -> bool:
-                    """Strict: only real HSWQ INT8 UNet modules — no torch/_dynamo junk."""
+                    """True for HSWQ INT8 and/or NVFP4 (incl. ZI ConvRot) UNet modules.
+
+                    Pure NVFP4 packs have ``format=nvfp4`` comfy_quant markers and
+                    ``_hswq_nvfp4_convrot`` arms — they are not ``int8_tensorwise``.
+                    Detecting only INT8 left ZI ConvRot models half-purged: Method 3
+                    nuked CUDA tensors while live Modules kept dead
+                    ``_hswq_nvfp4_parity_H`` → 2nd gen noise.
+                    """
                     if module is None or not _is_real_nn(module):
                         return False
                     baked = getattr(module, "_hswq_int8_baked_keys", None)
@@ -2343,6 +2404,17 @@ class DisTorchPurgeVRAMV2:
                         return True
                     if getattr(module, "_hswq_int8_baked_uuid", None) is not None:
                         return True
+                    try:
+                        for m in module.modules():
+                            if (
+                                getattr(m, "_hswq_nvfp4_convrot", False)
+                                or getattr(m, "_hswq_nvfp4", False)
+                                or getattr(m, "_hswq_int8_convrot", False)
+                                or getattr(m, "_hswq_nvfp4_parity_H", None) is not None
+                            ):
+                                return True
+                    except Exception:
+                        pass
                     try:
                         for name, buf in module.named_buffers():
                             if not (name.endswith("comfy_quant") or name.endswith(".comfy_quant")):
@@ -2352,12 +2424,16 @@ class DisTorchPurgeVRAMV2:
                                 if raw.dtype == torch.uint8 and raw.numel() > 0:
                                     import json
                                     conf = json.loads(bytes(raw.tolist()).decode("utf-8", errors="ignore"))
-                                    if isinstance(conf, dict) and conf.get("format") == "int8_tensorwise":
-                                        return True
-                                    if isinstance(conf, dict) and "format" in conf:
-                                        return conf.get("format") == "int8_tensorwise"
+                                    if isinstance(conf, dict):
+                                        fmt = conf.get("format")
+                                        if fmt in ("int8_tensorwise", "nvfp4"):
+                                            return True
+                                        if "format" in conf:
+                                            # Known non-HSWQ format → keep scanning
+                                            continue
                             except Exception:
                                 pass
+                            # Unparseable comfy_quant on an HSWQ pack → treat as hit
                             return True
                     except Exception:
                         pass
@@ -2451,6 +2527,26 @@ class DisTorchPurgeVRAMV2:
                             module._hswq_int8_baked_uuid = None
                     except Exception:
                         pass
+                    # ZI / ZIT ConvRot NVFP4 Comfy-parity: drop cached Hadamard + arms
+                    # so a half-purged Module cannot rotate with a dead H next sample.
+                    try:
+                        for m in module.modules():
+                            if hasattr(m, "_hswq_nvfp4_parity_H"):
+                                try:
+                                    h = getattr(m, "_hswq_nvfp4_parity_H", None)
+                                    if h is not None and torch.is_tensor(h):
+                                        freed += _kill_tensor_storage(h)
+                                except Exception:
+                                    pass
+                                try:
+                                    delattr(m, "_hswq_nvfp4_parity_H")
+                                except Exception:
+                                    try:
+                                        m._hswq_nvfp4_parity_H = None
+                                    except Exception:
+                                        pass
+                    except Exception as e:
+                        print(f"HSWQ INT8/NVFP4: NVFP4 parity_H kill warning ({label}): {e}")
                     print(f"HSWQ INT8/NVFP4: Killed ~{freed / (1024 * 1024):.1f} MB CUDA storage ({label})")
                     return freed
 
@@ -2516,7 +2612,7 @@ class DisTorchPurgeVRAMV2:
                                 if is_int8:
                                     models_found_mm += 1
                                     print(
-                                        f"HSWQ INT8/NVFP4: Found INT8 at current_loaded_models[{i}] "
+                                        f"HSWQ INT8/NVFP4: Found HSWQ INT8/NVFP4 at current_loaded_models[{i}] "
                                         f"type={type(loaded_model).__name__}"
                                     )
                                     try:
@@ -2606,7 +2702,7 @@ class DisTorchPurgeVRAMV2:
                             if _is_real_nn(obj) and _is_hswq_int8_nn(obj):
                                 models_found_in_gc += 1
                                 hswq_cleared += 1
-                                print(f"HSWQ INT8/NVFP4: Found INT8 in gc type={tname}")
+                                print(f"HSWQ INT8/NVFP4: Found HSWQ INT8/NVFP4 in gc type={tname}")
                                 bytes_killed += _kill_module_vram(obj, f"gc:{tname}")
                                 continue
                             if torch.is_tensor(obj):
@@ -2707,7 +2803,7 @@ class DisTorchPurgeVRAMV2:
 
                 _mem_diag("after")
                 print(
-                    f"HSWQ INT8/NVFP4: Done — cleared {hswq_cleared} INT8 ref(s), "
+                    f"HSWQ INT8/NVFP4: Done — cleared {hswq_cleared} HSWQ INT8/NVFP4 ref(s), "
                     f"pins_unregistered={pins_unregistered}, "
                     f"patchers={patchers_unloaded}, "
                     f"cuda_tensors={cuda_tensors_killed}, "
