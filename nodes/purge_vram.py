@@ -2328,28 +2328,46 @@ class DisTorchPurgeVRAMV2:
                                 f"failed ({name}): {e2}"
                             )
                     if parity_cleared == 0:
-                        # Fallback when HSWQ loader module is not imported yet /
-                        # clear fn missing: drop attrs on live Modules via gc.
+                        # Fallback when HSWQ loader parity module is not imported /
+                        # clear fn missing. Match Loader ``_clear_one`` attrs
+                        # (parity_H / nvfp4_H / ZI bake keys), not parity_H only.
+                        _parity_gc_attrs = (
+                            "_hswq_nvfp4_parity_H",
+                            "_hswq_nvfp4_H",
+                            "_hswq_zi_nvfp4_baked_keys",
+                            "_hswq_zi_nvfp4_baked_uuid",
+                        )
                         try:
                             import torch as _torch_parity
+
+                            def _drop_parity_gc_attr(mod, name: str) -> bool:
+                                if not hasattr(mod, name):
+                                    return False
+                                try:
+                                    delattr(mod, name)
+                                    return True
+                                except Exception:
+                                    try:
+                                        setattr(mod, name, None)
+                                        return True
+                                    except Exception:
+                                        return False
+
                             for obj in gc.get_objects():
                                 try:
                                     if not isinstance(obj, _torch_parity.nn.Module):
                                         continue
-                                    if not hasattr(obj, "_hswq_nvfp4_parity_H"):
-                                        continue
-                                    try:
-                                        delattr(obj, "_hswq_nvfp4_parity_H")
-                                    except Exception:
-                                        obj._hswq_nvfp4_parity_H = None
-                                    parity_cleared += 1
+                                    for attr in _parity_gc_attrs:
+                                        if _drop_parity_gc_attr(obj, attr):
+                                            parity_cleared += 1
                                 except Exception:
                                     continue
                             if parity_cleared:
-                                cleared.append(f"nvfp4_parity_H_gc={parity_cleared}")
+                                cleared.append(f"nvfp4_parity_attrs_gc={parity_cleared}")
                                 print(
                                     "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
-                                    f"Hadamard via gc (n={parity_cleared})"
+                                    f"attrs via gc (n={parity_cleared}; "
+                                    "parity_H/nvfp4_H/bake)"
                                 )
                         except Exception as e3:
                             print(
@@ -2457,6 +2475,7 @@ class DisTorchPurgeVRAMV2:
                                 or getattr(m, "_hswq_nvfp4", False)
                                 or getattr(m, "_hswq_int8_convrot", False)
                                 or getattr(m, "_hswq_nvfp4_parity_H", None) is not None
+                                or getattr(m, "_hswq_nvfp4_H", None) is not None
                                 or getattr(m, "_hswq_zi_nvfp4_baked_keys", None)
                                 or getattr(m, "_hswq_zi_nvfp4_baked_uuid", None) is not None
                             ):
@@ -2579,22 +2598,24 @@ class DisTorchPurgeVRAMV2:
                             module._hswq_zi_nvfp4_baked_uuid = None
                     except Exception:
                         pass
-                    # ZI / ZIT ConvRot NVFP4 Comfy-parity: drop cached Hadamard + arms
-                    # so a half-purged Module cannot rotate with a dead H next sample.
+                    # ZI / ZIT ConvRot NVFP4: drop cached H attrs (Loader _clear_one).
+                    # Half-purged Module must not rotate with a dead H next sample.
                     try:
                         for m in module.modules():
-                            if hasattr(m, "_hswq_nvfp4_parity_H"):
+                            for h_attr in ("_hswq_nvfp4_parity_H", "_hswq_nvfp4_H"):
+                                if not hasattr(m, h_attr):
+                                    continue
                                 try:
-                                    h = getattr(m, "_hswq_nvfp4_parity_H", None)
+                                    h = getattr(m, h_attr, None)
                                     if h is not None and torch.is_tensor(h):
                                         freed += _kill_tensor_storage(h)
                                 except Exception:
                                     pass
                                 try:
-                                    delattr(m, "_hswq_nvfp4_parity_H")
+                                    delattr(m, h_attr)
                                 except Exception:
                                     try:
-                                        m._hswq_nvfp4_parity_H = None
+                                        setattr(m, h_attr, None)
                                     except Exception:
                                         pass
                     except Exception as e:
