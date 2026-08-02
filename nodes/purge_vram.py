@@ -2217,12 +2217,13 @@ class DisTorchPurgeVRAMV2:
                       dead tensor → ``cublas_gemm_int8`` PyCapsule (INT8 2nd gen)
                     - HSWQ NVFP4 ``_ACT_Q_POOL`` / ``_ROT_OUT_POOL`` / CUDA-graph
                       cache → dead qx/sx buffers → ``quantize_nvfp4`` PyCapsule
-                      (SDXL TC ConvRot NVFP4 2nd gen after DistOrch purge)
+                      (SDXL TC ConvRot NVFP4 2nd gen after Distorch purge)
                     - Z Image / ZIT Comfy-parity Hadamard cache
-                      (``_hswq_nvfp4_parity_H``) → dead ``H`` with matching
-                      device/dtype → online act rotate produces noise (2nd gen)
+                      (``_hswq_nvfp4_parity_H`` + ``nvfp4_hadamard._HADAMARD_CACHE``)
+                      → dead ``H`` → online act rotate noise (2nd+ gen)
 
                     Model reload alone does not recreate those module-level pools.
+                    The Purge VRAM **HSWQ** toggle is the path that must clear them.
                     """
                     try:
                         import comfy_kitchen.backends.cuda as ck_cuda
@@ -2263,7 +2264,47 @@ class DisTorchPurgeVRAMV2:
                             print(
                                 f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed ({name}): {e2}"
                             )
-                    # Z Image / ZIT ConvRot Comfy-parity Hadamard caches.
+                    # Z Image / ZIT ConvRot: global Hadamard dicts MUST clear even when
+                    # nvfp4_comfy_parity is not in sys.modules. Method 3 can empty
+                    # storage on tensors still held by nvfp4_hadamard._HADAMARD_CACHE;
+                    # attr-only gc fallback leaves those entries → 2nd+ gen noise.
+                    # HSWQ toggle exists to run this path — not to patch the Loader.
+                    for name, mod in list(__import__("sys").modules.items()):
+                        if mod is None:
+                            continue
+                        if not (
+                            name.endswith("nvfp4_hadamard")
+                            or ".nvfp4_hadamard" in name
+                        ):
+                            continue
+                        fn = getattr(mod, "clear_hadamard_global_caches", None)
+                        try:
+                            if callable(fn):
+                                n_h = int(fn() or 0)
+                                cleared.append(f"nvfp4_hadamard_cache={n_h}")
+                                print(
+                                    "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 "
+                                    f"global Hadamard caches (n={n_h}) via {name}"
+                                )
+                            else:
+                                n_h = 0
+                                for attr in ("_HADAMARD_CACHE", "_H4_CACHE"):
+                                    bag = getattr(mod, attr, None)
+                                    if isinstance(bag, dict) and bag:
+                                        n_h += len(bag)
+                                        bag.clear()
+                                if n_h:
+                                    cleared.append(f"nvfp4_hadamard_dict={n_h}")
+                                    print(
+                                        "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 "
+                                        f"Hadamard dicts in-place (n={n_h}) via {name}"
+                                    )
+                        except Exception as e_h:
+                            print(
+                                f"HSWQ INT8/NVFP4: ZI NVFP4 Hadamard global clear "
+                                f"failed ({name}): {e_h}"
+                            )
+                    # Z Image / ZIT ConvRot Comfy-parity Hadamard module attrs.
                     parity_cleared = 0
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
