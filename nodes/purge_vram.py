@@ -2036,13 +2036,17 @@ class DisTorchPurgeVRAMV2:
                             return total
                         return 0
 
+                    found = False
                     for mod_name, mod in _sys_modules():
                         if mod is None or "hswq_pin_cache" not in str(mod_name):
                             continue
                         try:
-                            return _call_purge(mod, str(mod_name))
+                            drained += _call_purge(mod, str(mod_name))
+                            found = True
                         except Exception as e:
                             print(f"HSWQ INT8/NVFP4: PinCache purge via {mod_name} failed: {e}")
+                    if found:
+                        return drained
 
                     # Force-import: Detailer scope may have ended (deactivate drained
                     # tracking) or module never stayed in sys.modules under expected name.
@@ -2079,12 +2083,13 @@ class DisTorchPurgeVRAMV2:
                             mod = importlib.util.module_from_spec(spec)
                             spec.loader.exec_module(mod)
                             sys.modules["hswq_pin_cache_force_purge"] = mod
-                            return _call_purge(mod, pin_py)
+                            drained += _call_purge(mod, pin_py)
+                            return drained
                     except Exception as e:
                         print(f"HSWQ INT8/NVFP4: PinCache force-import failed: {e}")
 
                     print("HSWQ INT8/NVFP4: PinCache module not loaded (nothing to drain)")
-                    return 0
+                    return drained
 
                 def _purge_detailer_segs_and_executor_cache() -> int:
                     """Drop Impact SEGS / large IMAGE held in PromptExecutor caches now.
@@ -2208,40 +2213,66 @@ class DisTorchPurgeVRAMV2:
                     return freed_hint
 
                 def _reset_comfy_kitchen_cuda_caches() -> None:
-                    """Drop comfy_kitchen + HSWQ NVFP4 pooled CUDA buffers after nuclear kill.
+                    """Drop ALL HSWQ residual pools / module caches after nuclear kill.
 
-                    Method 0s / Method 3 walk gc.get_objects() and replace storage on
-                    large CUDA tensors. That includes:
+                    Independent of HSWQ Loader clear API presence or return values.
+                    Method 3 may empty tensor storage while poisoned refs remain in:
 
-                    - comfy_kitchen cuBLAS workspace (``_cublas_workspaces``) →
-                      dead tensor → ``cublas_gemm_int8`` PyCapsule (INT8 2nd gen)
-                    - HSWQ NVFP4 ``_ACT_Q_POOL`` / ``_ROT_OUT_POOL`` / CUDA-graph
-                      cache → dead qx/sx buffers → ``quantize_nvfp4`` PyCapsule
-                      (SDXL TC ConvRot NVFP4 2nd gen after Distorch purge)
-                    - Z Image / ZIT Comfy-parity Hadamard cache
-                      (``_hswq_nvfp4_parity_H`` + ``nvfp4_hadamard._HADAMARD_CACHE``)
-                      → dead ``H`` → online act rotate noise (2nd+ gen)
+                    - comfy_kitchen cuBLAS workspace (``_cublas_workspaces``)
+                    - NVFP4 ``_ACT_Q_POOL`` / ``_ROT_OUT_POOL`` / ``_GRAPH_CACHE``
+                    - ``nvfp4_hadamard._HADAMARD_CACHE`` / ``_H4_CACHE``
+                    - per-module ``_hswq_*`` H / bake / arm attrs
 
-                    Model reload alone does not recreate those module-level pools.
-                    The Purge VRAM **HSWQ** toggle is the path that must clear them.
+                    Loader ``clear_*`` is best-effort; local in-place + gc always run.
                     """
+                    cleared = []
+
+                    def _drop_attr(obj, name: str) -> bool:
+                        if not hasattr(obj, name):
+                            return False
+                        try:
+                            delattr(obj, name)
+                            return True
+                        except Exception:
+                            try:
+                                setattr(obj, name, None)
+                                return True
+                            except Exception:
+                                return False
+
+                    def _clear_dict_attr(mod, attr: str) -> int:
+                        bag = getattr(mod, attr, None)
+                        if isinstance(bag, dict) and bag:
+                            n = len(bag)
+                            bag.clear()
+                            return n
+                        return 0
+
+                    def _empty_cuda_tensor(t) -> None:
+                        if t is None or not torch.is_tensor(t):
+                            return
+                        try:
+                            data = getattr(t, "data", t)
+                            if not bool(getattr(data, "is_cuda", False)):
+                                return
+                            empty = torch.empty(0, dtype=data.dtype, device=data.device)
+                            t.data = empty
+                        except Exception:
+                            pass
+
+                    # --- comfy_kitchen ---
                     try:
                         import comfy_kitchen.backends.cuda as ck_cuda
                     except Exception as e:
                         print(f"HSWQ INT8/NVFP4: comfy_kitchen cuda import skipped: {e}")
                         ck_cuda = None
-                    cleared = []
                     if ck_cuda is not None:
-                        for attr in (
-                            "_cublas_workspaces",
-                            "_empty_cuda_tensors",
-                        ):
-                            bag = getattr(ck_cuda, attr, None)
-                            if isinstance(bag, dict) and bag:
-                                n = len(bag)
-                                bag.clear()
+                        for attr in ("_cublas_workspaces", "_empty_cuda_tensors"):
+                            n = _clear_dict_attr(ck_cuda, attr)
+                            if n:
                                 cleared.append(f"{attr}={n}")
-                    # HSWQ NVFP4 TC act / GEMM pools — scan sys.modules (import path varies).
+
+                    # --- NVFP4 runtime pools: API + always in-place, all copies ---
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
@@ -2250,25 +2281,41 @@ class DisTorchPurgeVRAMV2:
                             or ".nvfp4_runtime" in name
                         ):
                             continue
+                        api_ok = False
                         fn = getattr(mod, "clear_nvfp4_runtime_pools", None)
-                        if not callable(fn):
-                            continue
-                        try:
-                            fn()
-                            cleared.append("nvfp4_runtime_pools")
-                            print(
-                                "HSWQ INT8/NVFP4: Cleared HSWQ NVFP4 runtime pools / CUDA graphs"
-                            )
-                            break
-                        except Exception as e2:
-                            print(
-                                f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed ({name}): {e2}"
-                            )
-                    # Z Image / ZIT ConvRot: global Hadamard dicts MUST clear even when
-                    # nvfp4_comfy_parity is not in sys.modules. Method 3 can empty
-                    # storage on tensors still held by nvfp4_hadamard._HADAMARD_CACHE;
-                    # attr-only gc fallback leaves those entries → 2nd+ gen noise.
-                    # HSWQ toggle exists to run this path — not to patch the Loader.
+                        if callable(fn):
+                            try:
+                                fn()
+                                api_ok = True
+                                cleared.append(f"nvfp4_runtime_pools@{name}")
+                                print(
+                                    "HSWQ INT8/NVFP4: Cleared HSWQ NVFP4 runtime pools / "
+                                    f"CUDA graphs via {name}"
+                                )
+                            except Exception as e2:
+                                print(
+                                    f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed "
+                                    f"({name}): {e2}"
+                                )
+                        n_pool = 0
+                        for attr in ("_ACT_Q_POOL", "_ROT_OUT_POOL", "_GRAPH_CACHE"):
+                            n_pool += _clear_dict_attr(mod, attr)
+                        if not api_ok:
+                            cg = getattr(mod, "clear_nvfp4_cudagraphs", None)
+                            if callable(cg):
+                                try:
+                                    cg()
+                                except Exception:
+                                    pass
+                        if n_pool:
+                            cleared.append(f"nvfp4_runtime_inplace={n_pool}@{name}")
+                            if not api_ok:
+                                print(
+                                    "HSWQ INT8/NVFP4: Cleared NVFP4 runtime dicts "
+                                    f"in-place (n={n_pool}) via {name}"
+                                )
+
+                    # --- Hadamard globals: API + always in-place ---
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
@@ -2277,109 +2324,116 @@ class DisTorchPurgeVRAMV2:
                             or ".nvfp4_hadamard" in name
                         ):
                             continue
-                        fn = getattr(mod, "clear_hadamard_global_caches", None)
                         try:
+                            fn = getattr(mod, "clear_hadamard_global_caches", None)
                             if callable(fn):
                                 n_h = int(fn() or 0)
-                                cleared.append(f"nvfp4_hadamard_cache={n_h}")
+                                cleared.append(f"nvfp4_hadamard_cache={n_h}@{name}")
                                 print(
                                     "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 "
                                     f"global Hadamard caches (n={n_h}) via {name}"
                                 )
-                            else:
-                                n_h = 0
-                                for attr in ("_HADAMARD_CACHE", "_H4_CACHE"):
-                                    bag = getattr(mod, attr, None)
-                                    if isinstance(bag, dict) and bag:
-                                        n_h += len(bag)
-                                        bag.clear()
-                                if n_h:
-                                    cleared.append(f"nvfp4_hadamard_dict={n_h}")
+                            n_h2 = 0
+                            for attr in ("_HADAMARD_CACHE", "_H4_CACHE"):
+                                n_h2 += _clear_dict_attr(mod, attr)
+                            if n_h2:
+                                cleared.append(f"nvfp4_hadamard_inplace={n_h2}@{name}")
+                                if not callable(fn):
                                     print(
                                         "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 "
-                                        f"Hadamard dicts in-place (n={n_h}) via {name}"
+                                        f"Hadamard dicts in-place (n={n_h2}) via {name}"
                                     )
                         except Exception as e_h:
                             print(
                                 f"HSWQ INT8/NVFP4: ZI NVFP4 Hadamard global clear "
                                 f"failed ({name}): {e_h}"
                             )
-                    # Z Image / ZIT ConvRot Comfy-parity Hadamard module attrs.
-                    parity_cleared = 0
+
+                    # --- Loader parity clear API (best-effort; never gates local gc) ---
                     for name, mod in list(__import__("sys").modules.items()):
-                        if mod is None:
-                            continue
-                        if "nvfp4_comfy_parity" not in name:
+                        if mod is None or "nvfp4_comfy_parity" not in name:
                             continue
                         fn = getattr(mod, "clear_nvfp4_parity_hadamard_caches", None)
                         if not callable(fn):
                             continue
                         try:
-                            parity_cleared = int(fn() or 0)
-                            cleared.append(f"nvfp4_parity_H={parity_cleared}")
+                            n = int(fn() or 0)
+                            cleared.append(f"nvfp4_parity_api={n}@{name}")
                             print(
                                 "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
-                                f"Hadamard caches (n={parity_cleared})"
+                                f"via Loader API (n={n}) via {name}"
                             )
-                            break
                         except Exception as e2:
                             print(
                                 f"HSWQ INT8/NVFP4: ZI NVFP4 parity Hadamard clear "
                                 f"failed ({name}): {e2}"
                             )
-                    if parity_cleared == 0:
-                        # Fallback when HSWQ loader parity module is not imported /
-                        # clear fn missing. Match Loader ``_clear_one`` attrs
-                        # (parity_H / nvfp4_H / ZI bake keys), not parity_H only.
-                        _parity_gc_attrs = (
-                            "_hswq_nvfp4_parity_H",
-                            "_hswq_nvfp4_H",
-                            "_hswq_zi_nvfp4_baked_keys",
-                            "_hswq_zi_nvfp4_baked_uuid",
-                        )
-                        try:
-                            import torch as _torch_parity
 
-                            def _drop_parity_gc_attr(mod, name: str) -> bool:
-                                if not hasattr(mod, name):
-                                    return False
-                                try:
-                                    delattr(mod, name)
-                                    return True
-                                except Exception:
-                                    try:
-                                        setattr(mod, name, None)
-                                        return True
-                                    except Exception:
-                                        return False
-
-                            for obj in gc.get_objects():
-                                try:
-                                    if not isinstance(obj, _torch_parity.nn.Module):
-                                        continue
-                                    for attr in _parity_gc_attrs:
-                                        if _drop_parity_gc_attr(obj, attr):
-                                            parity_cleared += 1
-                                except Exception:
+                    # --- ALWAYS local gc: every HSWQ module residual ---
+                    _hswq_drop_attrs = (
+                        "_hswq_nvfp4_parity_H",
+                        "_hswq_nvfp4_H",
+                        "_hswq_int8_baked_keys",
+                        "_hswq_int8_baked_uuid",
+                        "_hswq_zi_nvfp4_baked_keys",
+                        "_hswq_zi_nvfp4_baked_uuid",
+                        "_hswq_nvfp4_convrot",
+                        "_hswq_nvfp4_convrot_groupsize",
+                        "_hswq_nvfp4",
+                        "_hswq_int8_convrot",
+                        "_hswq_int8_convrot_groupsize",
+                    )
+                    local_dropped = 0
+                    try:
+                        for obj in gc.get_objects():
+                            try:
+                                if not isinstance(obj, torch.nn.Module):
                                     continue
-                            if parity_cleared:
-                                cleared.append(f"nvfp4_parity_attrs_gc={parity_cleared}")
-                                print(
-                                    "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
-                                    f"attrs via gc (n={parity_cleared}; "
-                                    "parity_H/nvfp4_H/bake)"
-                                )
-                        except Exception as e3:
+                                for attr in _hswq_drop_attrs:
+                                    try:
+                                        if not hasattr(obj, attr):
+                                            continue
+                                        _empty_cuda_tensor(getattr(obj, attr, None))
+                                        if _drop_attr(obj, attr):
+                                            local_dropped += 1
+                                    except Exception:
+                                        pass
+                                # Stray ``_hswq_*`` tensors not in the known list
+                                try:
+                                    for k, v in list(vars(obj).items()):
+                                        if not (
+                                            isinstance(k, str) and k.startswith("_hswq_")
+                                        ):
+                                            continue
+                                        if k in _hswq_drop_attrs:
+                                            continue
+                                        if not torch.is_tensor(v):
+                                            continue
+                                        _empty_cuda_tensor(v)
+                                        if _drop_attr(obj, k):
+                                            local_dropped += 1
+                                except Exception:
+                                    pass
+                            except Exception:
+                                continue
+                        if local_dropped:
+                            cleared.append(f"hswq_module_attrs_gc={local_dropped}")
                             print(
-                                f"HSWQ INT8/NVFP4: ZI NVFP4 parity gc clear skipped: {e3}"
+                                "HSWQ INT8/NVFP4: Local gc dropped HSWQ module attrs "
+                                f"(n={local_dropped}; H/bake/arm + stray _hswq_* tensors)"
                             )
+                    except Exception as e3:
+                        print(
+                            f"HSWQ INT8/NVFP4: HSWQ module attr gc clear skipped: {e3}"
+                        )
+
                     if cleared:
                         print(
-                            "HSWQ INT8/NVFP4: Reset comfy_kitchen CUDA caches "
+                            "HSWQ INT8/NVFP4: Reset HSWQ/comfy_kitchen caches "
                             + ", ".join(cleared)
                         )
                     else:
-                        print("HSWQ INT8/NVFP4: comfy_kitchen CUDA caches already empty")
+                        print("HSWQ INT8/NVFP4: HSWQ/comfy_kitchen caches already empty")
 
                 def _force_unregister_comfy_pins() -> int:
                     """Unregister every cudaHostRegister tracked by ComfyUI PINNED_MEMORY."""
@@ -2587,39 +2641,60 @@ class DisTorchPurgeVRAMV2:
                             freed += _kill_tensor_storage(b)
                     except Exception as e:
                         print(f"HSWQ INT8/NVFP4: buffer kill warning ({label}): {e}")
-                    try:
-                        if hasattr(module, "_hswq_int8_baked_keys"):
-                            module._hswq_int8_baked_keys = None
-                        if hasattr(module, "_hswq_int8_baked_uuid"):
-                            module._hswq_int8_baked_uuid = None
-                        if hasattr(module, "_hswq_zi_nvfp4_baked_keys"):
-                            module._hswq_zi_nvfp4_baked_keys = None
-                        if hasattr(module, "_hswq_zi_nvfp4_baked_uuid"):
-                            module._hswq_zi_nvfp4_baked_uuid = None
-                    except Exception:
-                        pass
-                    # ZI / ZIT ConvRot NVFP4: drop cached H attrs (Loader _clear_one).
-                    # Half-purged Module must not rotate with a dead H next sample.
+                    # Drop ALL HSWQ module residuals (cache + bake + arm), every submodule.
+                    # Loader presence does not matter — next load re-arms ConvRot/TC.
+                    _hswq_kill_attrs = (
+                        "_hswq_nvfp4_parity_H",
+                        "_hswq_nvfp4_H",
+                        "_hswq_int8_baked_keys",
+                        "_hswq_int8_baked_uuid",
+                        "_hswq_zi_nvfp4_baked_keys",
+                        "_hswq_zi_nvfp4_baked_uuid",
+                        "_hswq_nvfp4_convrot",
+                        "_hswq_nvfp4_convrot_groupsize",
+                        "_hswq_nvfp4",
+                        "_hswq_int8_convrot",
+                        "_hswq_int8_convrot_groupsize",
+                    )
                     try:
                         for m in module.modules():
-                            for h_attr in ("_hswq_nvfp4_parity_H", "_hswq_nvfp4_H"):
-                                if not hasattr(m, h_attr):
+                            for attr in _hswq_kill_attrs:
+                                if not hasattr(m, attr):
                                     continue
                                 try:
-                                    h = getattr(m, h_attr, None)
-                                    if h is not None and torch.is_tensor(h):
-                                        freed += _kill_tensor_storage(h)
+                                    val = getattr(m, attr, None)
+                                    if torch.is_tensor(val):
+                                        freed += _kill_tensor_storage(val)
                                 except Exception:
                                     pass
                                 try:
-                                    delattr(m, h_attr)
+                                    delattr(m, attr)
                                 except Exception:
                                     try:
-                                        setattr(m, h_attr, None)
+                                        setattr(m, attr, None)
                                     except Exception:
                                         pass
+                            # Stray ``_hswq_*`` CUDA tensors
+                            try:
+                                for k, v in list(vars(m).items()):
+                                    if not (isinstance(k, str) and k.startswith("_hswq_")):
+                                        continue
+                                    if k in _hswq_kill_attrs:
+                                        continue
+                                    if not torch.is_tensor(v):
+                                        continue
+                                    freed += _kill_tensor_storage(v)
+                                    try:
+                                        delattr(m, k)
+                                    except Exception:
+                                        try:
+                                            setattr(m, k, None)
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
                     except Exception as e:
-                        print(f"HSWQ INT8/NVFP4: NVFP4 parity_H kill warning ({label}): {e}")
+                        print(f"HSWQ INT8/NVFP4: HSWQ attr kill warning ({label}): {e}")
                     print(f"HSWQ INT8/NVFP4: Killed ~{freed / (1024 * 1024):.1f} MB CUDA storage ({label})")
                     return freed
 
