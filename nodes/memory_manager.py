@@ -105,10 +105,14 @@ class MemoryManager:
                 try:
                     import comfy.model_management
                     if hasattr(comfy.model_management, 'free_memory'):
-                        # Only free CUDA memory, skip CPU as it may cause errors
+                        # Request a huge free so Comfy actually unloads / empties CUDA.
+                        # free_memory(0, ...) is a no-op and left Krea2 NVFP4 ~9GB resident.
                         if torch.cuda.is_available():
                             try:
-                                comfy.model_management.free_memory(0, 'cuda:0')
+                                for di in range(torch.cuda.device_count()):
+                                    comfy.model_management.free_memory(
+                                        1e30, torch.device(f"cuda:{di}")
+                                    )
                             except Exception as e:
                                 print(f"Virtual memory reset (CUDA) failed: {e}")
                         print("Virtual memory reset")
@@ -165,10 +169,13 @@ class SafeMemoryManager:
                 try:
                     import comfy.model_management
                     if hasattr(comfy.model_management, 'free_memory'):
-                        # Only free CUDA memory, skip CPU as it may cause errors
+                        # free_memory(0, ...) is a no-op; request a huge free on all devices.
                         if torch.cuda.is_available():
                             try:
-                                comfy.model_management.free_memory(0, 'cuda:0')
+                                for di in range(torch.cuda.device_count()):
+                                    comfy.model_management.free_memory(
+                                        1e30, torch.device(f"cuda:{di}")
+                                    )
                             except Exception as e:
                                 print(f"Safe virtual memory reset (CUDA) failed: {e}")
                         print("Safe virtual memory reset")

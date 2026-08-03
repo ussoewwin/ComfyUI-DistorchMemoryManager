@@ -122,40 +122,150 @@ class DisTorchPurgeVRAMV2:
                     except Exception as e:
                         print(f"Error in cleanup_models_gc: {e}")
                 
-                # More aggressive model unloading
+                # Aggressive unload: MultiGPU Dynamic / NVFP4 (Krea2) often leave
+                # ~9GB CUDA after model_unload()==True. Soft path alone is not enough.
                 if hasattr(comfy.model_management, "current_loaded_models"):
                     current_loaded_models = comfy.model_management.current_loaded_models
                     unloaded_count = 0
-                    
-                    # Mark all models as not currently used
-                    for loaded_model in current_loaded_models:
-                        if loaded_model is not None:
+                    bytes_force_killed = 0
+
+                    def _force_empty_cuda_storage(t) -> int:
+                        # NVFP4 / MultiGPU Dynamic: free leftover CUDA only.
+                        # Never wipe CPU tensors — after model_unload() they are
+                        # ComfyUI's reload source. Wiping to empty(0) made CLIP
+                        # Embedding.weight non-2D (Ollama purge → CLIPTextEncode
+                        # RuntimeError: 'weight' must be 2-D; reload logged 0.00 MB).
+                        if t is None:
+                            return 0
+                        freed = 0
+                        try:
+                            data = getattr(t, "data", t)
+                            if data is None:
+                                return 0
+                            nbytes = int(getattr(data, "nbytes", 0) or 0)
+                            is_cuda = False
                             try:
-                                if hasattr(loaded_model, "is_dead") and callable(loaded_model.is_dead):
-                                    if not loaded_model.is_dead():
-                                        loaded_model.currently_used = False
-                                else:
-                                    loaded_model.currently_used = False
-                            except Exception as e:
-                                print(f"Error checking model status: {e}")
-                    
-                    # Try to unload models
+                                is_cuda = bool(getattr(data, "is_cuda", False))
+                                if not is_cuda:
+                                    dev = getattr(data, "device", None)
+                                    is_cuda = getattr(dev, "type", None) == "cuda"
+                            except Exception:
+                                pass
+                            if not is_cuda:
+                                return 0
+                            dtype = getattr(data, "dtype", torch.float32)
+                            empty = torch.empty(0, dtype=dtype, device="cpu")
+                            if hasattr(t, "data"):
+                                t.data = empty
+                            freed = nbytes
+                        except Exception:
+                            pass
+                        return freed
+
+                    def _force_kill_nn_cuda(module) -> int:
+                        if module is None:
+                            return 0
+                        freed = 0
+                        try:
+                            if hasattr(module, "to") and callable(module.to):
+                                try:
+                                    module.to("cpu")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            for _n, p in list(module.named_parameters()):
+                                freed += _force_empty_cuda_storage(p)
+                        except Exception:
+                            pass
+                        try:
+                            for _n, b in list(module.named_buffers()):
+                                freed += _force_empty_cuda_storage(b)
+                        except Exception:
+                            pass
+                        return freed
+
+                    def _unwrap_nn_soft(obj):
+                        cur = obj
+                        for _ in range(8):
+                            if cur is None:
+                                return None
+                            try:
+                                if isinstance(cur, torch.nn.Module):
+                                    return cur
+                            except Exception:
+                                pass
+                            nxt = getattr(cur, "model", None)
+                            if nxt is None or nxt is cur:
+                                nxt = getattr(cur, "diffusion_model", None)
+                            if nxt is None or nxt is cur:
+                                try:
+                                    return cur if isinstance(cur, torch.nn.Module) else None
+                                except Exception:
+                                    return None
+                            cur = nxt
+                        try:
+                            return cur if isinstance(cur, torch.nn.Module) else None
+                        except Exception:
+                            return None
+
+                    # Mark unused, unload, kill CUDA storage, then remove from registry
                     for i in range(len(current_loaded_models) - 1, -1, -1):
                         loaded_model = current_loaded_models[i]
-                        if loaded_model is not None:
+                        if loaded_model is None:
                             try:
-                                if hasattr(loaded_model, "is_dead") and callable(loaded_model.is_dead):
-                                    if loaded_model.is_dead():
-                                        continue
+                                current_loaded_models.pop(i)
+                            except Exception:
+                                pass
+                            continue
+                        try:
+                            try:
+                                loaded_model.currently_used = False
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(loaded_model, "partially_unload") and callable(loaded_model.partially_unload):
+                                    try:
+                                        loaded_model.partially_unload(None, 1e30)
+                                    except Exception:
+                                        loaded_model.partially_unload(torch.device("cpu"), 1e30)
+                            except Exception:
+                                pass
+                            try:
                                 if hasattr(loaded_model, "model_unload") and callable(loaded_model.model_unload):
-                                    if loaded_model.model_unload():
-                                        unloaded_count += 1
+                                    loaded_model.model_unload()
+                                    unloaded_count += 1
                             except Exception as e:
                                 print(f"Error unloading model: {e}")
-                    
+                            try:
+                                inner = getattr(loaded_model, "model", None)
+                                nn = _unwrap_nn_soft(inner)
+                                if nn is not None:
+                                    bytes_force_killed += _force_kill_nn_cuda(nn)
+                                elif inner is not None:
+                                    bytes_force_killed += _force_kill_nn_cuda(_unwrap_nn_soft(inner))
+                            except Exception:
+                                pass
+                            try:
+                                current_loaded_models.pop(i)
+                            except Exception:
+                                pass
+                        except Exception as e:
+                            print(f"Error force-unloading model[{i}]: {e}")
+                            try:
+                                current_loaded_models.pop(i)
+                            except Exception:
+                                pass
+
                     if unloaded_count > 0:
                         print(f"Unloaded {unloaded_count} model(s)")
-                    
+                    if bytes_force_killed > 0:
+                        print(
+                            f"Force-killed ~{bytes_force_killed / (1024 ** 3):.2f} GB CUDA storage "
+                            f"from loaded models (MultiGPU/NVFP4 soft-unload residue)"
+                        )
+
                     # Pre-cleanup again before second cleanup_models() call
                     if hasattr(comfy.model_management, "current_loaded_models"):
                         current_loaded_models = comfy.model_management.current_loaded_models
@@ -189,6 +299,22 @@ class DisTorchPurgeVRAMV2:
                             comfy.model_management.cleanup_models()
                         except Exception as e:
                             print(f"Error in cleanup_models: {e}")
+
+                # Hard free: unload_all + free_memory(1e30). free_memory(0) does nothing.
+                try:
+                    mm = comfy.model_management
+                    if hasattr(mm, "unload_all_models") and callable(mm.unload_all_models):
+                        mm.unload_all_models()
+                        print("unload_all_models() issued")
+                    if torch.cuda.is_available() and hasattr(mm, "free_memory") and callable(mm.free_memory):
+                        for di in range(torch.cuda.device_count()):
+                            try:
+                                mm.free_memory(1e30, torch.device(f"cuda:{di}"))
+                            except Exception as e:
+                                print(f"free_memory(cuda:{di}) warning: {e}")
+                        print("free_memory(1e30) issued for all CUDA devices")
+                except Exception as e:
+                    print(f"Hard free after purge_models warning: {e}")
                 
                 # Soft empty cache (if available)
                 if hasattr(comfy.model_management, "soft_empty_cache") and callable(comfy.model_management.soft_empty_cache):
@@ -1965,6 +2091,7 @@ class DisTorchPurgeVRAMV2:
 
         # Purge HSWQ whole path (models / INT8 / PinCache / Detailer / pins / kitchen)
         # + orphaned ComfyUI cudaHostRegister / CUDA tensors (Task Manager dedicated GPU mem)
+        # HSWQ nuclear runs ONLY when the HSWQ toggle is explicitly ON — never auto-arm.
         if purge_hswq_int8:
             try:
                 print("HSWQ INT8/NVFP4: Starting purge process...")
@@ -2275,8 +2402,22 @@ class DisTorchPurgeVRAMV2:
                     """
                     cleared = []
 
+                    def _safe_hasattr(obj, name: str) -> bool:
+                        # Some third-party modules (e.g. seedvr2 compatibility wrappers)
+                        # raise ImportError from __getattr__; bare hasattr aborts purge.
+                        try:
+                            return hasattr(obj, name)
+                        except Exception:
+                            return False
+
+                    def _safe_getattr(obj, name: str, default=None):
+                        try:
+                            return getattr(obj, name, default)
+                        except Exception:
+                            return default
+
                     def _drop_attr(obj, name: str) -> bool:
-                        if not hasattr(obj, name):
+                        if not _safe_hasattr(obj, name):
                             return False
                         try:
                             delattr(obj, name)
@@ -2289,7 +2430,7 @@ class DisTorchPurgeVRAMV2:
                                 return False
 
                     def _clear_dict_attr(mod, attr: str) -> int:
-                        bag = getattr(mod, attr, None)
+                        bag = _safe_getattr(mod, attr, None)
                         if isinstance(bag, dict) and bag:
                             n = len(bag)
                             bag.clear()
@@ -2366,7 +2507,7 @@ class DisTorchPurgeVRAMV2:
                             "restore_nvfp4_tc_product_stack",
                             "uninstall_zimage_nvfp4_lora_bake",
                         ):
-                            fn = getattr(mod, api_name, None)
+                            fn = _safe_getattr(mod, api_name, None)
                             if not callable(fn):
                                 continue
                             try:
@@ -2382,99 +2523,391 @@ class DisTorchPurgeVRAMV2:
                                     f"({name}): {e_peel}"
                                 )
 
+                    # --- Peel ZI INT8-protect load arm on ops._load_quantized_module ---
+                    # SDXL INT8 ConvRot and ZI INT8 protect share conf shape
+                    # (int8_tensorwise + convrot). Loader peel may leave
+                    # _hswq_int8_protect_in_load / _hswq_int8_protect_arm_v2
+                    # (arm freevar is ``cur``, not orig_load) or PRODUCT wrapping
+                    # that arm — then _arm_int8_protect_convrot_after_stock_load
+                    # fires on SDXL load (Params.convrot=False / VER=8 bake).
+                    try:
+                        import comfy.ops as _ops_peel_load
+
+                        def _closure_load_cell(fn, name: str):
+                            try:
+                                cells = fn.__closure__ or ()
+                                for n, c in zip(fn.__code__.co_freevars, cells):
+                                    if n == name:
+                                        return c.cell_contents
+                            except Exception:
+                                return None
+                            return None
+
+                        def _is_foreign_int8_protect_load(fn) -> bool:
+                            return bool(
+                                getattr(fn, "_hswq_nvfp4_comfy_only", False)
+                                or getattr(fn, "_hswq_int8_protect_in_load", False)
+                                or getattr(fn, "_hswq_int8_protect_arm_v2", False)
+                                or getattr(fn, "_hswq_int8_decode_patched", False)
+                                or (
+                                    getattr(fn, "_hswq_nvfp4_full_load", False)
+                                    and not getattr(
+                                        fn, "_hswq_nvfp4_product_tc", False
+                                    )
+                                )
+                            )
+
+                        def _next_load_under(fn):
+                            for name in (
+                                "cur",
+                                "orig_load",
+                                "original_load",
+                                "_orig_load",
+                            ):
+                                nxt = _closure_load_cell(fn, name)
+                                if nxt is not None:
+                                    return nxt
+                            return getattr(fn, "_hswq_nvfp4_orig_load", None)
+
+                        _peeled_load_n = 0
+                        _cur_l = getattr(
+                            _ops_peel_load, "_load_quantized_module", None
+                        )
+                        _seen_l: set[int] = set()
+                        while (
+                            _cur_l is not None
+                            and id(_cur_l) not in _seen_l
+                            and _peeled_load_n < 16
+                        ):
+                            _seen_l.add(id(_cur_l))
+                            if getattr(_cur_l, "_hswq_nvfp4_product_tc", False):
+                                _under = _next_load_under(_cur_l)
+                                if _under is not None and _is_foreign_int8_protect_load(
+                                    _under
+                                ):
+                                    _ops_peel_load._load_quantized_module = _under
+                                    _peeled_load_n += 1
+                                    _cur_l = _under
+                                    continue
+                                break
+                            if not _is_foreign_int8_protect_load(_cur_l):
+                                break
+                            _nxt_l = _next_load_under(_cur_l)
+                            if _nxt_l is None or _nxt_l is _cur_l:
+                                break
+                            _ops_peel_load._load_quantized_module = _nxt_l
+                            _peeled_load_n += 1
+                            _cur_l = _nxt_l
+                        if _peeled_load_n:
+                            cleared.append(
+                                f"int8_protect_load_peel={_peeled_load_n}"
+                            )
+                            print(
+                                "HSWQ INT8/NVFP4: peeled ZI INT8-protect "
+                                f"load overlay layers={_peeled_load_n}"
+                            )
+                    except Exception as e_load_peel:
+                        print(
+                            "HSWQ INT8/NVFP4: INT8-protect load peel failed: "
+                            f"{e_load_peel}"
+                        )
+
+                    # --- Peel ZI/NVFP4 Linear.convert_weight / set_weight wraps ---
+                    # uninstall_zimage_nvfp4_lora_bake only peels Dynamic.load /
+                    # load_models_gpu. ZI attach_nvfp4_linear_lora_bake mutates
+                    # MixedPrecision Linear in place; after ZI→SDXL the third SDXL
+                    # bake still logs ConvRot int8_protect convert/set and LoRA
+                    # strength dies. Restore stock (INT8) convert/set here.
+                    def _peel_lora_bake_wrap_local(fn):
+                        cur = fn
+                        for _ in range(8):
+                            if not callable(cur):
+                                return cur
+                            if int(
+                                getattr(cur, "_hswq_nvfp4_lora_bake_ver", 0) or 0
+                            ) <= 0:
+                                return cur
+                            stock = getattr(
+                                cur, "_hswq_nvfp4_lora_bake_stock", None
+                            )
+                            if stock is not None and stock is not cur:
+                                cur = stock
+                                continue
+                            closure = getattr(cur, "__closure__", None)
+                            code = getattr(cur, "__code__", None)
+                            if closure is None or code is None:
+                                return cur
+                            names = code.co_freevars
+                            nxt = None
+                            for i, nfree in enumerate(names):
+                                if nfree in (
+                                    "stock_convert_weight",
+                                    "stock_set_weight",
+                                ):
+                                    nxt = closure[i].cell_contents
+                                    break
+                            if nxt is None or nxt is cur:
+                                return cur
+                            cur = nxt
+                        return cur
+
+                    peel_fn = _peel_lora_bake_wrap_local
+                    for _pname, _pmod in list(__import__("sys").modules.items()):
+                        if _pmod is None:
+                            continue
+                        _plow = str(_pname).replace("\\", "/").lower()
+                        if (
+                            "zi_nvfp4_forward" not in _plow
+                            and not _plow.endswith("nvfp4_forward")
+                            and ".nvfp4_forward" not in _plow
+                        ):
+                            continue
+                        _helper = _safe_getattr(
+                            _pmod, "_peel_lora_bake_wrap", None
+                        )
+                        if callable(_helper):
+                            peel_fn = _helper
+                            break
+
+                    _peeled_lin_ids = set()
+
+                    def _peel_linear_lora_bake(Lin, label: str) -> None:
+                        if Lin is None or not isinstance(Lin, type):
+                            return
+                        lid = id(Lin)
+                        if lid in _peeled_lin_ids:
+                            return
+                        for meth in ("convert_weight", "set_weight"):
+                            fn = getattr(Lin, meth, None)
+                            if not callable(fn):
+                                continue
+                            ver = int(
+                                getattr(fn, "_hswq_nvfp4_lora_bake_ver", 0) or 0
+                            )
+                            if ver <= 0:
+                                continue
+                            try:
+                                peeled = peel_fn(fn)
+                            except Exception as e_peel_fn:
+                                print(
+                                    "HSWQ INT8/NVFP4: Linear LoRA bake peel "
+                                    f"helper failed ({label}.{meth}): {e_peel_fn}"
+                                )
+                                continue
+                            if peeled is fn or not callable(peeled):
+                                continue
+                            try:
+                                setattr(Lin, meth, peeled)
+                                _peeled_lin_ids.add(lid)
+                                cleared.append(
+                                    f"linear_lora_bake_peel@{label}.{meth}"
+                                    f"=ver{ver}"
+                                )
+                                print(
+                                    "HSWQ INT8/NVFP4: Peeled NVFP4/ZI Linear "
+                                    f"LoRA bake wrap {label}.{meth} "
+                                    f"(was ver={ver})"
+                                )
+                            except Exception as e_set:
+                                print(
+                                    "HSWQ INT8/NVFP4: Linear LoRA bake peel "
+                                    f"setattr failed ({label}.{meth}): {e_set}"
+                                )
+
+                    try:
+                        import comfy.ops as _comfy_ops
+
+                        _peel_linear_lora_bake(
+                            getattr(_comfy_ops, "Linear", None),
+                            "comfy.ops.Linear",
+                        )
+                        for _an in dir(_comfy_ops):
+                            try:
+                                _obj = getattr(_comfy_ops, _an, None)
+                            except Exception:
+                                continue
+                            if isinstance(_obj, type) and _safe_hasattr(
+                                _obj, "convert_weight"
+                            ):
+                                _peel_linear_lora_bake(
+                                    _obj, f"comfy.ops.{_an}"
+                                )
+                    except Exception as e_ops:
+                        print(
+                            "HSWQ INT8/NVFP4: comfy.ops Linear LoRA bake peel "
+                            f"skipped: {e_ops}"
+                        )
+
+                    for _name, _mod in list(__import__("sys").modules.items()):
+                        if _mod is None:
+                            continue
+                        _nlow = str(_name).replace("\\", "/").lower()
+                        if not (
+                            "comfy.ops" in _nlow
+                            or "nvfp4" in _nlow
+                            or "comfy_quant" in _nlow
+                            or "zimage_nvfp4" in _nlow
+                            or "hswq" in _nlow
+                        ):
+                            continue
+                        try:
+                            _Lin = _safe_getattr(_mod, "Linear", None)
+                            if isinstance(_Lin, type):
+                                _cvt = getattr(_Lin, "convert_weight", None)
+                                if callable(_cvt) and int(
+                                    getattr(
+                                        _cvt, "_hswq_nvfp4_lora_bake_ver", 0
+                                    )
+                                    or 0
+                                ) > 0:
+                                    _peel_linear_lora_bake(
+                                        _Lin, f"{_name}.Linear"
+                                    )
+                        except Exception:
+                            pass
+
+                    # Nested MixedPrecisionOps.Linear may not sit on a module.
+                    try:
+                        import gc as _gc_peel
+
+                        for _obj in _gc_peel.get_objects():
+                            if not isinstance(_obj, type):
+                                continue
+                            if getattr(_obj, "__name__", "") != "Linear":
+                                continue
+                            _modn = str(
+                                getattr(_obj, "__module__", "") or ""
+                            ).lower()
+                            if not (
+                                "comfy" in _modn
+                                or "ops" in _modn
+                                or "quant" in _modn
+                            ):
+                                continue
+                            _cvt = getattr(_obj, "convert_weight", None)
+                            if not (
+                                callable(_cvt)
+                                and int(
+                                    getattr(
+                                        _cvt, "_hswq_nvfp4_lora_bake_ver", 0
+                                    )
+                                    or 0
+                                )
+                                > 0
+                            ):
+                                continue
+                            _peel_linear_lora_bake(
+                                _obj, f"gc:{_modn}.Linear"
+                            )
+                    except Exception as e_gc_peel:
+                        print(
+                            "HSWQ INT8/NVFP4: gc Linear LoRA bake peel "
+                            f"skipped: {e_gc_peel}"
+                        )
+
                     # --- NVFP4 runtime pools + scale caches (SDXL + any twin) ---
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
-                        nlow = str(name).replace("\\", "/").lower()
-                        has_pool = (
-                            hasattr(mod, "_ACT_Q_POOL")
-                            or hasattr(mod, "_ROT_OUT_POOL")
-                            or hasattr(mod, "_GRAPH_CACHE")
-                            or hasattr(mod, "clear_nvfp4_runtime_pools")
-                        )
-                        name_hit = (
-                            name.endswith("nvfp4_runtime")
-                            or ".nvfp4_runtime" in name
-                            or "nvfp4_runtime" in nlow
-                        )
-                        if not name_hit and not has_pool:
-                            continue
-                        if has_pool and not name_hit:
-                            # Only touch modules that look HSWQ/NVFP4 owned
-                            if "nvfp4" not in nlow and "hswq" not in nlow:
+                        try:
+                            nlow = str(name).replace("\\", "/").lower()
+                            name_hit = (
+                                name.endswith("nvfp4_runtime")
+                                or ".nvfp4_runtime" in name
+                                or "nvfp4_runtime" in nlow
+                            )
+                            # Name-first: avoid probing unrelated modules whose
+                            # __getattr__ raises (seedvr2 flashattention stubs).
+                            if not name_hit and "nvfp4" not in nlow and "hswq" not in nlow:
                                 continue
-                        api_ok = False
-                        fn = getattr(mod, "clear_nvfp4_runtime_pools", None)
-                        if callable(fn):
-                            try:
-                                fn()
-                                api_ok = True
-                                cleared.append(f"nvfp4_runtime_pools@{name}")
-                                print(
-                                    "HSWQ INT8/NVFP4: Cleared HSWQ NVFP4 runtime pools / "
-                                    f"CUDA graphs via {name}"
-                                )
-                            except Exception as e2:
-                                print(
-                                    f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed "
-                                    f"({name}): {e2}"
-                                )
-                        n_pool = 0
-                        for attr in (
-                            "_ACT_Q_POOL",
-                            "_ROT_OUT_POOL",
-                            "_GRAPH_CACHE",
-                            "_INV_NVFP4_AMAX_DENOM",
-                            "_ONES_SCALE",
-                        ):
-                            n_pool += _clear_dict_attr(mod, attr)
-                        if not api_ok:
-                            cg = getattr(mod, "clear_nvfp4_cudagraphs", None)
-                            if callable(cg):
+                            has_pool = (
+                                _safe_hasattr(mod, "_ACT_Q_POOL")
+                                or _safe_hasattr(mod, "_ROT_OUT_POOL")
+                                or _safe_hasattr(mod, "_GRAPH_CACHE")
+                                or _safe_hasattr(mod, "clear_nvfp4_runtime_pools")
+                            )
+                            if not name_hit and not has_pool:
+                                continue
+                            api_ok = False
+                            fn = _safe_getattr(mod, "clear_nvfp4_runtime_pools", None)
+                            if callable(fn):
                                 try:
-                                    cg()
-                                except Exception:
-                                    pass
-                        if n_pool:
-                            cleared.append(f"nvfp4_runtime_inplace={n_pool}@{name}")
+                                    fn()
+                                    api_ok = True
+                                    cleared.append(f"nvfp4_runtime_pools@{name}")
+                                    print(
+                                        "HSWQ INT8/NVFP4: Cleared HSWQ NVFP4 runtime pools / "
+                                        f"CUDA graphs via {name}"
+                                    )
+                                except Exception as e2:
+                                    print(
+                                        f"HSWQ INT8/NVFP4: NVFP4 runtime pool clear failed "
+                                        f"({name}): {e2}"
+                                    )
+                            n_pool = 0
+                            for attr in (
+                                "_ACT_Q_POOL",
+                                "_ROT_OUT_POOL",
+                                "_GRAPH_CACHE",
+                                "_INV_NVFP4_AMAX_DENOM",
+                                "_ONES_SCALE",
+                            ):
+                                n_pool += _clear_dict_attr(mod, attr)
                             if not api_ok:
-                                print(
-                                    "HSWQ INT8/NVFP4: Cleared NVFP4 runtime dicts "
-                                    f"in-place (n={n_pool}) via {name}"
-                                )
+                                cg = _safe_getattr(mod, "clear_nvfp4_cudagraphs", None)
+                                if callable(cg):
+                                    try:
+                                        cg()
+                                    except Exception:
+                                        pass
+                            if n_pool:
+                                cleared.append(f"nvfp4_runtime_inplace={n_pool}@{name}")
+                                if not api_ok:
+                                    print(
+                                        "HSWQ INT8/NVFP4: Cleared NVFP4 runtime dicts "
+                                        f"in-place (n={n_pool}) via {name}"
+                                    )
+                        except Exception as e_pool:
+                            print(
+                                f"HSWQ INT8/NVFP4: NVFP4 runtime scan skip "
+                                f"({name}): {e_pool}"
+                            )
 
                     # --- Hadamard globals: SDXL nvfp4 + ZI zi_nvfp4 + INT8 ---
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
-                        nlow = str(name).replace("\\", "/").lower()
-                        has_h = (
-                            hasattr(mod, "_HADAMARD_CACHE")
-                            or hasattr(mod, "_H4_CACHE")
-                            or hasattr(mod, "clear_hadamard_global_caches")
-                        )
-                        is_nv_h = (
-                            name.endswith("nvfp4_hadamard")
-                            or ".nvfp4_hadamard" in name
-                            or "zi_nvfp4_hadamard" in nlow
-                            or nlow.endswith("nvfp4_hadamard")
-                        )
-                        is_int8_h = (
-                            "native_convert_int8" in nlow
-                            or nlow.endswith("native_convert_int8")
-                        )
-                        if not is_nv_h and not is_int8_h:
-                            if not has_h:
-                                continue
-                            if not (
-                                "hswq" in nlow
-                                or "nvfp4" in nlow
-                                or "zimage" in nlow
-                            ):
-                                continue
                         try:
-                            fn = getattr(mod, "clear_hadamard_global_caches", None)
+                            nlow = str(name).replace("\\", "/").lower()
+                            is_nv_h = (
+                                name.endswith("nvfp4_hadamard")
+                                or ".nvfp4_hadamard" in name
+                                or "zi_nvfp4_hadamard" in nlow
+                                or nlow.endswith("nvfp4_hadamard")
+                            )
+                            is_int8_h = (
+                                "native_convert_int8" in nlow
+                                or nlow.endswith("native_convert_int8")
+                            )
+                            if not is_nv_h and not is_int8_h:
+                                if not (
+                                    "hswq" in nlow
+                                    or "nvfp4" in nlow
+                                    or "zimage" in nlow
+                                ):
+                                    continue
+                                has_h = (
+                                    _safe_hasattr(mod, "_HADAMARD_CACHE")
+                                    or _safe_hasattr(mod, "_H4_CACHE")
+                                    or _safe_hasattr(
+                                        mod, "clear_hadamard_global_caches"
+                                    )
+                                )
+                                if not has_h:
+                                    continue
+                            fn = _safe_getattr(
+                                mod, "clear_hadamard_global_caches", None
+                            )
                             if callable(fn):
                                 n_h = int(fn() or 0)
                                 cleared.append(f"hadamard_api={n_h}@{name}")
@@ -2518,7 +2951,7 @@ class DisTorchPurgeVRAMV2:
                             "reset_nvfp4_forward_stats",
                             "reset_nvfp4_lora_log_counters",
                         ):
-                            fn = getattr(mod, api_name, None)
+                            fn = _safe_getattr(mod, api_name, None)
                             if not callable(fn):
                                 continue
                             try:
@@ -2743,6 +3176,8 @@ class DisTorchPurgeVRAMV2:
                     return False
 
                 def _kill_tensor_storage(t) -> int:
+                    # Same rule as _force_empty_cuda_storage: unpin/CPU-safe only;
+                    # empty(0) only for CUDA. CPU wipe broke ZI TE after Ollama purge.
                     if t is None:
                         return 0
                     freed = 0
@@ -2771,12 +3206,13 @@ class DisTorchPurgeVRAMV2:
                                         pass
                         except Exception:
                             pass
+                        if not is_cuda:
+                            return 0
                         dtype = getattr(data, "dtype", torch.float32)
                         empty = torch.empty(0, dtype=dtype, device="cpu")
                         if hasattr(t, "data"):
                             t.data = empty
-                        if is_cuda:
-                            freed = nbytes
+                        freed = nbytes
                     except Exception:
                         pass
                     return freed
