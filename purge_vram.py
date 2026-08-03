@@ -2319,7 +2319,11 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_nvfp4_no_cudagraph",
                         "_hswq_nvfp4_convrot",
                         "_hswq_nvfp4_convrot_groupsize",
+                        "_hswq_nvfp4_convrot_parity",
                         "_hswq_nvfp4",
+                        "_hswq_nvfp4_act_scale",
+                        "_hswq_nvfp4_scale_placeholder",
+                        "_hswq_nvfp4_scale_from_ckpt",
                         "_hswq_zi_nvfp4_baked_keys",
                         "_hswq_zi_nvfp4_baked_uuid",
                         # INT8 Linear protect ConvRot
@@ -2344,15 +2348,62 @@ class DisTorchPurgeVRAMV2:
                             if n:
                                 cleared.append(f"{attr}={n}")
 
-                    # --- NVFP4 runtime pools + scale caches ---
+                    # --- Peel Z Image parity / bake hooks so SDXL TC is not poisoned ---
+                    # Loader also does this on SDXL load; Distorch must do it on purge so
+                    # the next model (SDXL after ZI) never inherits comfy_parity / ZI bake.
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
+                        nlow = str(name).replace("\\", "/").lower()
                         if not (
-                            name.endswith("nvfp4_runtime")
-                            or ".nvfp4_runtime" in name
+                            "nvfp4" in nlow
+                            or "zimage_nvfp4" in nlow
+                            or "comfy_quant_nvfp4" in nlow
                         ):
                             continue
+                        for api_name in (
+                            "_clear_zimage_parity_contamination_for_sdxl",
+                            "restore_nvfp4_tc_product_stack",
+                            "uninstall_zimage_nvfp4_lora_bake",
+                        ):
+                            fn = getattr(mod, api_name, None)
+                            if not callable(fn):
+                                continue
+                            try:
+                                ret = fn()
+                                cleared.append(f"{api_name}@{name}={ret!r}")
+                                print(
+                                    "HSWQ INT8/NVFP4: HSWQ stack peel "
+                                    f"{api_name} via {name} -> {ret!r}"
+                                )
+                            except Exception as e_peel:
+                                print(
+                                    f"HSWQ INT8/NVFP4: {api_name} failed "
+                                    f"({name}): {e_peel}"
+                                )
+
+                    # --- NVFP4 runtime pools + scale caches (SDXL + any twin) ---
+                    for name, mod in list(__import__("sys").modules.items()):
+                        if mod is None:
+                            continue
+                        nlow = str(name).replace("\\", "/").lower()
+                        has_pool = (
+                            hasattr(mod, "_ACT_Q_POOL")
+                            or hasattr(mod, "_ROT_OUT_POOL")
+                            or hasattr(mod, "_GRAPH_CACHE")
+                            or hasattr(mod, "clear_nvfp4_runtime_pools")
+                        )
+                        name_hit = (
+                            name.endswith("nvfp4_runtime")
+                            or ".nvfp4_runtime" in name
+                            or "nvfp4_runtime" in nlow
+                        )
+                        if not name_hit and not has_pool:
+                            continue
+                        if has_pool and not name_hit:
+                            # Only touch modules that look HSWQ/NVFP4 owned
+                            if "nvfp4" not in nlow and "hswq" not in nlow:
+                                continue
                         api_ok = False
                         fn = getattr(mod, "clear_nvfp4_runtime_pools", None)
                         if callable(fn):
@@ -2393,26 +2444,33 @@ class DisTorchPurgeVRAMV2:
                                     f"in-place (n={n_pool}) via {name}"
                                 )
 
-                    # --- Hadamard globals: NVFP4 + INT8 native_convert ---
+                    # --- Hadamard globals: SDXL nvfp4 + ZI zi_nvfp4 + INT8 ---
                     for name, mod in list(__import__("sys").modules.items()):
                         if mod is None:
                             continue
                         nlow = str(name).replace("\\", "/").lower()
+                        has_h = (
+                            hasattr(mod, "_HADAMARD_CACHE")
+                            or hasattr(mod, "_H4_CACHE")
+                            or hasattr(mod, "clear_hadamard_global_caches")
+                        )
                         is_nv_h = (
                             name.endswith("nvfp4_hadamard")
                             or ".nvfp4_hadamard" in name
+                            or "zi_nvfp4_hadamard" in nlow
+                            or nlow.endswith("nvfp4_hadamard")
                         )
                         is_int8_h = (
                             "native_convert_int8" in nlow
                             or nlow.endswith("native_convert_int8")
                         )
                         if not is_nv_h and not is_int8_h:
-                            # Any HSWQ module that owns a Hadamard dict
-                            if "hswq" not in nlow:
+                            if not has_h:
                                 continue
                             if not (
-                                hasattr(mod, "_HADAMARD_CACHE")
-                                or hasattr(mod, "_H4_CACHE")
+                                "hswq" in nlow
+                                or "nvfp4" in nlow
+                                or "zimage" in nlow
                             ):
                                 continue
                         try:
@@ -2443,25 +2501,38 @@ class DisTorchPurgeVRAMV2:
                                 f"failed ({name}): {e_h}"
                             )
 
-                    # --- Loader parity clear API (best-effort; never gates local gc) ---
+                    # --- Loader parity / stats clear (best-effort; never gates local gc) ---
                     for name, mod in list(__import__("sys").modules.items()):
-                        if mod is None or "nvfp4_comfy_parity" not in name:
+                        if mod is None:
                             continue
-                        fn = getattr(mod, "clear_nvfp4_parity_hadamard_caches", None)
-                        if not callable(fn):
+                        nlow = str(name).replace("\\", "/").lower()
+                        if not (
+                            "nvfp4_comfy_parity" in nlow
+                            or "nvfp4_forward" in nlow
+                            or "zi_nvfp4_forward" in nlow
+                            or "comfy_quant_nvfp4" in nlow
+                        ):
                             continue
-                        try:
-                            n = int(fn() or 0)
-                            cleared.append(f"nvfp4_parity_api={n}@{name}")
-                            print(
-                                "HSWQ INT8/NVFP4: Cleared ZI ConvRot NVFP4 parity "
-                                f"via Loader API (n={n}) via {name}"
-                            )
-                        except Exception as e2:
-                            print(
-                                f"HSWQ INT8/NVFP4: ZI NVFP4 parity Hadamard clear "
-                                f"failed ({name}): {e2}"
-                            )
+                        for api_name in (
+                            "clear_nvfp4_parity_hadamard_caches",
+                            "reset_nvfp4_forward_stats",
+                            "reset_nvfp4_lora_log_counters",
+                        ):
+                            fn = getattr(mod, api_name, None)
+                            if not callable(fn):
+                                continue
+                            try:
+                                ret = fn()
+                                cleared.append(f"{api_name}@{name}={ret!r}")
+                                print(
+                                    "HSWQ INT8/NVFP4: "
+                                    f"{api_name} via {name} -> {ret!r}"
+                                )
+                            except Exception as e2:
+                                print(
+                                    f"HSWQ INT8/NVFP4: {api_name} failed "
+                                    f"({name}): {e2}"
+                                )
 
                     # --- ALWAYS local gc: every HSWQ module residual (INT8+NVFP4+Detailer models) ---
                     local_dropped = 0
