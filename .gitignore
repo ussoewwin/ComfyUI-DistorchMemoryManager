@@ -39,9 +39,6 @@ Thumbs.db
 # Logs
 *.log
 
-# Release notes (managed via GitHub releases)
-release_notes_*.md
-
-# Documentation folder
-md/
+# Release notes at repo root (managed via GitHub releases)
+/release_notes_*.md
 
