@@ -44,7 +44,7 @@ class DisTorchPurgeVRAMV2:
     RETURN_TYPES = (any,)
     RETURN_NAMES = ("any",)
     FUNCTION = "purge_vram"
-    CATEGORY = "DisTorch/Memory"
+    CATEGORY = "Distorch/Memory"
 
     def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models, **kwargs):
         # Toggle label is "HSWQ"; accept legacy "HSWQ INT8" for old workflows.

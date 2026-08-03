@@ -214,7 +214,7 @@ any = AnyType("*")
 
 # Import Purge VRAM V2 node.
 # Prefer nodes.purge_vram (Method 2c clears HSWQ NVFP4 runtime pools + ZI
-# ConvRot parity Hadamard after DistOrch nuclear kill). Root purge_vram.py is
+# ConvRot parity Hadamard after Distorch nuclear kill). Root purge_vram.py is
 # legacy fallback only.
 try:
     from .nodes.purge_vram import DisTorchPurgeVRAMV2
