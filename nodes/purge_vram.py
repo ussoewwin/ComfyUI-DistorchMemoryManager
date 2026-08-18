@@ -2475,6 +2475,10 @@ class DisTorchPurgeVRAMV2:
                         # INT8 Conv2d ConvRot (comfy_quant_int8 QuantConv2d)
                         "_hswq_convrot",
                         "_hswq_convrot_groupsize",
+                        # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps)
+                        "_hswq_krea2_nvfp4_pack",
+                        "_hswq_krea2_nvfp4_baked_keys",
+                        "_hswq_krea2_nvfp4_baked_uuid",
                     )
 
                     # --- comfy_kitchen ---
@@ -2506,6 +2510,9 @@ class DisTorchPurgeVRAMV2:
                             "_clear_zimage_parity_contamination_for_sdxl",
                             "restore_nvfp4_tc_product_stack",
                             "uninstall_zimage_nvfp4_lora_bake",
+                            # Krea2 ConvRot NVFP4 (Dynamic.load / load_models_gpu bake hooks)
+                            "uninstall_krea2_nvfp4_lora_bake",
+                            "reset_krea2_nvfp4_lora_bake_log_counters",
                         ):
                             fn = _safe_getattr(mod, api_name, None)
                             if not callable(fn):
@@ -2549,6 +2556,7 @@ class DisTorchPurgeVRAMV2:
                                 or getattr(fn, "_hswq_int8_protect_in_load", False)
                                 or getattr(fn, "_hswq_int8_protect_arm_v2", False)
                                 or getattr(fn, "_hswq_int8_decode_patched", False)
+                                or getattr(fn, "_hswq_krea2_full_load", False)
                                 or (
                                     getattr(fn, "_hswq_nvfp4_full_load", False)
                                     and not getattr(
@@ -2610,6 +2618,65 @@ class DisTorchPurgeVRAMV2:
                         print(
                             "HSWQ INT8/NVFP4: INT8-protect load peel failed: "
                             f"{e_load_peel}"
+                        )
+
+                    # --- Peel Krea2 ConvRot NVFP4 stack (mixed_precision_ops +
+                    #     convert_old_quants). uninstall_krea2_nvfp4_lora_bake only
+                    #     peels Dynamic.load / load_models_gpu, not these ops wraps. ---
+                    try:
+                        import comfy.ops as _ops_peel_krea2_mp
+                        import comfy.utils as _utils_peel_krea2
+
+                        def _peel_krea2_mp_once():
+                            cur = getattr(_ops_peel_krea2_mp, "mixed_precision_ops", None)
+                            seen = set()
+                            peeled = 0
+                            while cur is not None and callable(cur) and id(cur) not in seen:
+                                seen.add(id(cur))
+                                if not getattr(cur, "_hswq_krea2_stack", False):
+                                    break
+                                nxt = getattr(cur, "_hswq_nvfp4_orig_mp", None)
+                                if nxt is None or nxt is cur:
+                                    break
+                                _ops_peel_krea2_mp.mixed_precision_ops = nxt
+                                peeled += 1
+                                cur = nxt
+                            return peeled
+
+                        def _peel_krea2_oldquants_once():
+                            cur = getattr(_utils_peel_krea2, "convert_old_quants", None)
+                            seen = set()
+                            peeled = 0
+                            while cur is not None and callable(cur) and id(cur) not in seen:
+                                seen.add(id(cur))
+                                if not getattr(cur, "_hswq_krea2_oldquants", False):
+                                    break
+                                nxt = getattr(cur, "_hswq_krea2_prev_oldquants", None)
+                                if nxt is None or nxt is cur:
+                                    break
+                                _utils_peel_krea2.convert_old_quants = nxt
+                                peeled += 1
+                                cur = nxt
+                            return peeled
+
+                        _mp_peeled_k2 = _peel_krea2_mp_once()
+                        _oq_peeled_k2 = _peel_krea2_oldquants_once()
+                        if _mp_peeled_k2:
+                            cleared.append(f"krea2_mp_stack_peel={_mp_peeled_k2}")
+                            print(
+                                "HSWQ INT8/NVFP4: peeled Krea2 mixed_precision_ops "
+                                f"stack layers={_mp_peeled_k2}"
+                            )
+                        if _oq_peeled_k2:
+                            cleared.append(f"krea2_oldquants_peel={_oq_peeled_k2}")
+                            print(
+                                "HSWQ INT8/NVFP4: peeled Krea2 convert_old_quants "
+                                f"layers={_oq_peeled_k2}"
+                            )
+                    except Exception as e_krea2_peel:
+                        print(
+                            "HSWQ INT8/NVFP4: Krea2 stack peel failed: "
+                            f"{e_krea2_peel}"
                         )
 
                     # --- Peel ZI/NVFP4 Linear.convert_weight / set_weight wraps ---
@@ -3106,6 +3173,13 @@ class DisTorchPurgeVRAMV2:
                         return True
                     if getattr(module, "_hswq_zi_nvfp4_baked_uuid", None) is not None:
                         return True
+                    # Krea2 ConvRot NVFP4 bake bookkeeping / pack stamp.
+                    if getattr(module, "_hswq_krea2_nvfp4_baked_keys", None):
+                        return True
+                    if getattr(module, "_hswq_krea2_nvfp4_baked_uuid", None) is not None:
+                        return True
+                    if getattr(module, "_hswq_krea2_nvfp4_pack", False):
+                        return True
                     try:
                         for m in module.modules():
                             if (
@@ -3119,6 +3193,9 @@ class DisTorchPurgeVRAMV2:
                                 or getattr(m, "_hswq_nvfp4_w_plain", None) is not None
                                 or getattr(m, "_hswq_zi_nvfp4_baked_keys", None)
                                 or getattr(m, "_hswq_zi_nvfp4_baked_uuid", None) is not None
+                                or getattr(m, "_hswq_krea2_nvfp4_baked_keys", None)
+                                or getattr(m, "_hswq_krea2_nvfp4_baked_uuid", None) is not None
+                                or getattr(m, "_hswq_krea2_nvfp4_pack", False)
                             ):
                                 return True
                             # Any residual ``_hswq_*`` (INT8 / NVFP4 / bake / TC caches)
@@ -3258,6 +3335,10 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_int8_convrot_groupsize",
                         "_hswq_convrot",
                         "_hswq_convrot_groupsize",
+                        # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps)
+                        "_hswq_krea2_nvfp4_pack",
+                        "_hswq_krea2_nvfp4_baked_keys",
+                        "_hswq_krea2_nvfp4_baked_uuid",
                     )
                     try:
                         for m in module.modules():
