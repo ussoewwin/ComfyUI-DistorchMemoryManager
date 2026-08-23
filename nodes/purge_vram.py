@@ -2438,16 +2438,27 @@ class DisTorchPurgeVRAMV2:
                         return 0
 
                     def _empty_cuda_tensor(t) -> None:
-                        if t is None or not torch.is_tensor(t):
+                        if t is None:
                             return
-                        try:
-                            data = getattr(t, "data", t)
-                            if not bool(getattr(data, "is_cuda", False)):
-                                return
-                            empty = torch.empty(0, dtype=data.dtype, device=data.device)
-                            t.data = empty
-                        except Exception:
-                            pass
+                        if torch.is_tensor(t):
+                            try:
+                                data = getattr(t, "data", t)
+                                if not bool(getattr(data, "is_cuda", False)):
+                                    return
+                                empty = torch.empty(0, dtype=data.dtype, device=data.device)
+                                t.data = empty
+                            except Exception:
+                                pass
+                            return
+                        # Nested containers (e.g. _hswq_krea2_lora_res = [(mat_dn, mat_up, scale), ...])
+                        if isinstance(t, (list, tuple)):
+                            for item in t:
+                                if item is not None:
+                                    _empty_cuda_tensor(item)
+                        elif isinstance(t, dict):
+                            for v in t.values():
+                                if v is not None:
+                                    _empty_cuda_tensor(v)
 
                     # Known residual names (INT8 + NVFP4 + bake + forward caches).
                     # Stray walk below also drops every other ``_hswq_*`` on Modules.
@@ -2475,10 +2486,19 @@ class DisTorchPurgeVRAMV2:
                         # INT8 Conv2d ConvRot (comfy_quant_int8 QuantConv2d)
                         "_hswq_convrot",
                         "_hswq_convrot_groupsize",
-                        # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps)
+                        # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps / LoRA residuals)
                         "_hswq_krea2_nvfp4_pack",
                         "_hswq_krea2_nvfp4_baked_keys",
                         "_hswq_krea2_nvfp4_baked_uuid",
+                        "_hswq_krea2_lora_res",
+                        "_hswq_krea2_lora_res_gpu",
+                        "_hswq_krea2_tc",
+                        "_hswq_krea2_stack",
+                        "_hswq_krea2_full_load",
+                        "_hswq_krea2_oldquants",
+                        "_hswq_krea2_prev_oldquants",
+                        "_hswq_krea2_txtlayers_fix",
+                        "_hswq_krea2_prev_dynamic_load",
                     )
 
                     # --- comfy_kitchen ---
@@ -2621,11 +2641,12 @@ class DisTorchPurgeVRAMV2:
                         )
 
                     # --- Peel Krea2 ConvRot NVFP4 stack (mixed_precision_ops +
-                    #     convert_old_quants). uninstall_krea2_nvfp4_lora_bake only
+                    #     convert_old_quants + detect_unet_config). uninstall_krea2_nvfp4_lora_bake only
                     #     peels Dynamic.load / load_models_gpu, not these ops wraps. ---
                     try:
                         import comfy.ops as _ops_peel_krea2_mp
                         import comfy.utils as _utils_peel_krea2
+                        import comfy.model_detection as _md_peel_krea2
 
                         def _peel_krea2_mp_once():
                             cur = getattr(_ops_peel_krea2_mp, "mixed_precision_ops", None)
@@ -2659,8 +2680,25 @@ class DisTorchPurgeVRAMV2:
                                 cur = nxt
                             return peeled
 
+                        def _peel_krea2_txtlayers_once():
+                            cur = getattr(_md_peel_krea2, "detect_unet_config", None)
+                            seen = set()
+                            peeled = 0
+                            while cur is not None and callable(cur) and id(cur) not in seen:
+                                seen.add(id(cur))
+                                if not getattr(cur, "_hswq_krea2_txtlayers_fix", False):
+                                    break
+                                nxt = _closure_load_cell(cur, "_prev_detect_txt")
+                                if nxt is None or nxt is cur:
+                                    break
+                                _md_peel_krea2.detect_unet_config = nxt
+                                peeled += 1
+                                cur = nxt
+                            return peeled
+
                         _mp_peeled_k2 = _peel_krea2_mp_once()
                         _oq_peeled_k2 = _peel_krea2_oldquants_once()
+                        _txt_peeled_k2 = _peel_krea2_txtlayers_once()
                         if _mp_peeled_k2:
                             cleared.append(f"krea2_mp_stack_peel={_mp_peeled_k2}")
                             print(
@@ -2672,6 +2710,12 @@ class DisTorchPurgeVRAMV2:
                             print(
                                 "HSWQ INT8/NVFP4: peeled Krea2 convert_old_quants "
                                 f"layers={_oq_peeled_k2}"
+                            )
+                        if _txt_peeled_k2:
+                            cleared.append(f"krea2_txtlayers_peel={_txt_peeled_k2}")
+                            print(
+                                "HSWQ INT8/NVFP4: peeled Krea2 detect_unet_config txtlayers "
+                                f"fix layers={_txt_peeled_k2}"
                             )
                     except Exception as e_krea2_peel:
                         print(
@@ -3007,16 +3051,21 @@ class DisTorchPurgeVRAMV2:
                             continue
                         nlow = str(name).replace("\\", "/").lower()
                         if not (
-                            "nvfp4_comfy_parity" in nlow
-                            or "nvfp4_forward" in nlow
-                            or "zi_nvfp4_forward" in nlow
-                            or "comfy_quant_nvfp4" in nlow
+                            "nvfp4" in nlow
+                            or "zi_nvfp4" in nlow
+                            or "comfy_quant" in nlow
+                            or "hswq" in nlow
+                            or "patches" in nlow
                         ):
                             continue
                         for api_name in (
                             "clear_nvfp4_parity_hadamard_caches",
                             "reset_nvfp4_forward_stats",
                             "reset_nvfp4_lora_log_counters",
+                            "reset_krea2_nvfp4_lora_bake_log_counters",
+                            "reset_int8_lora_log_counters",
+                            "clear_nvfp4_runtime_pools",
+                            "clear_nvfp4_cudagraphs",
                         ):
                             fn = _safe_getattr(mod, api_name, None)
                             if not callable(fn):
@@ -3153,7 +3202,7 @@ class DisTorchPurgeVRAMV2:
                     return cur if _is_real_nn(cur) else None
 
                 def _is_hswq_int8_nn(module) -> bool:
-                    """True for HSWQ INT8 and/or NVFP4 (incl. ZI ConvRot) UNet modules.
+                    """True for HSWQ INT8 and/or NVFP4 (incl. ZI / Krea2 ConvRot) UNet modules.
 
                     Pure NVFP4 packs have ``format=nvfp4`` comfy_quant markers and
                     ``_hswq_nvfp4_convrot`` arms — they are not ``int8_tensorwise``.
@@ -3173,12 +3222,16 @@ class DisTorchPurgeVRAMV2:
                         return True
                     if getattr(module, "_hswq_zi_nvfp4_baked_uuid", None) is not None:
                         return True
-                    # Krea2 ConvRot NVFP4 bake bookkeeping / pack stamp.
+                    # Krea2 ConvRot NVFP4 bake bookkeeping / pack stamp / LoRA residual.
                     if getattr(module, "_hswq_krea2_nvfp4_baked_keys", None):
                         return True
                     if getattr(module, "_hswq_krea2_nvfp4_baked_uuid", None) is not None:
                         return True
                     if getattr(module, "_hswq_krea2_nvfp4_pack", False):
+                        return True
+                    if getattr(module, "_hswq_krea2_lora_res", None) is not None:
+                        return True
+                    if getattr(module, "_hswq_krea2_lora_res_gpu", None) is not None:
                         return True
                     try:
                         for m in module.modules():
@@ -3196,6 +3249,8 @@ class DisTorchPurgeVRAMV2:
                                 or getattr(m, "_hswq_krea2_nvfp4_baked_keys", None)
                                 or getattr(m, "_hswq_krea2_nvfp4_baked_uuid", None) is not None
                                 or getattr(m, "_hswq_krea2_nvfp4_pack", False)
+                                or getattr(m, "_hswq_krea2_lora_res", None) is not None
+                                or getattr(m, "_hswq_krea2_lora_res_gpu", None) is not None
                             ):
                                 return True
                             # Any residual ``_hswq_*`` (INT8 / NVFP4 / bake / TC caches)
@@ -3257,6 +3312,18 @@ class DisTorchPurgeVRAMV2:
                     # empty(0) only for CUDA. CPU wipe broke ZI TE after Ollama purge.
                     if t is None:
                         return 0
+                    if isinstance(t, (list, tuple)):
+                        freed_nested = 0
+                        for item in t:
+                            if item is not None:
+                                freed_nested += _kill_tensor_storage(item)
+                        return freed_nested
+                    if isinstance(t, dict):
+                        freed_nested = 0
+                        for v in t.values():
+                            if v is not None:
+                                freed_nested += _kill_tensor_storage(v)
+                        return freed_nested
                     freed = 0
                     try:
                         data = getattr(t, "data", t)
@@ -3335,10 +3402,19 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_int8_convrot_groupsize",
                         "_hswq_convrot",
                         "_hswq_convrot_groupsize",
-                        # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps)
+                        # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps / LoRA residuals)
                         "_hswq_krea2_nvfp4_pack",
                         "_hswq_krea2_nvfp4_baked_keys",
                         "_hswq_krea2_nvfp4_baked_uuid",
+                        "_hswq_krea2_lora_res",
+                        "_hswq_krea2_lora_res_gpu",
+                        "_hswq_krea2_tc",
+                        "_hswq_krea2_stack",
+                        "_hswq_krea2_full_load",
+                        "_hswq_krea2_oldquants",
+                        "_hswq_krea2_prev_oldquants",
+                        "_hswq_krea2_txtlayers_fix",
+                        "_hswq_krea2_prev_dynamic_load",
                     )
                     try:
                         for m in module.modules():
@@ -3347,7 +3423,7 @@ class DisTorchPurgeVRAMV2:
                                     continue
                                 try:
                                     val = getattr(m, attr, None)
-                                    if torch.is_tensor(val):
+                                    if val is not None:
                                         freed += _kill_tensor_storage(val)
                                 except Exception:
                                     pass
