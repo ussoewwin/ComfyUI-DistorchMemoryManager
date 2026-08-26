@@ -2,6 +2,13 @@
 Purge VRAM V2 node for DistorchMemoryManager
 """
 import torch
+
+# Loader detection flags that must NOT be purged from cached model Linears.
+# (They are tiny bool/int markers; purging them makes the next prompt run
+#  with flagged=0 because ComfyUI reuses the cached ModelPatcher without
+#  re-running the HSWQ loader's stock-load arm.)
+_HSWQ_KEEP_LOADER_FLAGS = frozenset({
+})
 import gc
 import sys
 import os
@@ -2469,9 +2476,6 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_nvfp4_w_plain",
                         "_hswq_nvfp4_alpha",
                         "_hswq_nvfp4_no_cudagraph",
-                        "_hswq_nvfp4_convrot",
-                        "_hswq_nvfp4_convrot_groupsize",
-                        "_hswq_nvfp4_convrot_parity",
                         "_hswq_nvfp4",
                         "_hswq_nvfp4_act_scale",
                         "_hswq_nvfp4_scale_placeholder",
@@ -2479,13 +2483,9 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_zi_nvfp4_baked_keys",
                         "_hswq_zi_nvfp4_baked_uuid",
                         # INT8 Linear protect ConvRot
-                        "_hswq_int8_convrot",
-                        "_hswq_int8_convrot_groupsize",
                         "_hswq_int8_baked_keys",
                         "_hswq_int8_baked_uuid",
                         # INT8 Conv2d ConvRot (comfy_quant_int8 QuantConv2d)
-                        "_hswq_convrot",
-                        "_hswq_convrot_groupsize",
                         # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps / LoRA residuals)
                         "_hswq_krea2_nvfp4_pack",
                         "_hswq_krea2_nvfp4_baked_keys",
@@ -3395,13 +3395,7 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_int8_baked_uuid",
                         "_hswq_zi_nvfp4_baked_keys",
                         "_hswq_zi_nvfp4_baked_uuid",
-                        "_hswq_nvfp4_convrot",
-                        "_hswq_nvfp4_convrot_groupsize",
                         "_hswq_nvfp4",
-                        "_hswq_int8_convrot",
-                        "_hswq_int8_convrot_groupsize",
-                        "_hswq_convrot",
-                        "_hswq_convrot_groupsize",
                         # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps / LoRA residuals)
                         "_hswq_krea2_nvfp4_pack",
                         "_hswq_krea2_nvfp4_baked_keys",
