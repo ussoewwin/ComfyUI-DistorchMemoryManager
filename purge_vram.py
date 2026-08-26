@@ -3092,15 +3092,8 @@ class DisTorchPurgeVRAMV2:
                                     if _ptr in _pm:
                                         # Registered with ComfyUI: unpin via mm (keeps bookkeeping in sync).
                                         mm.unpin_memory(data)
-                                    else:
-                                        # Not pinned by ComfyUI (Detailer/SEGS cache): raw unregister,
-                                        # avoids mm.unpin_memory "not pinned by ComfyUI" warning.
-                                        torch.cuda.cudart().cudaHostUnregister(_ptr)
                                 except Exception:
-                                    try:
-                                        torch.cuda.cudart().cudaHostUnregister(data.data_ptr())
-                                    except Exception:
-                                        pass
+                                    pass
                         except Exception:
                             pass
                         if not is_cuda:
@@ -3366,16 +3359,10 @@ class DisTorchPurgeVRAMV2:
                                             if mm is not None and _optr in _pm2:
                                                 # Registered with ComfyUI: unpin via mm.
                                                 mm.unpin_memory(obj)
-                                            else:
-                                                # Not pinned by ComfyUI: raw unregister, no warning.
-                                                torch.cuda.cudart().cudaHostUnregister(_optr)
+                                                pins_unregistered += 1
+                                                bytes_killed += nbytes
                                         except Exception:
-                                            try:
-                                                torch.cuda.cudart().cudaHostUnregister(obj.data_ptr())
-                                            except Exception:
-                                                pass
-                                        pins_unregistered += 1
-                                        bytes_killed += nbytes
+                                            pass
                                 except Exception:
                                     pass
                                 try:
