@@ -3711,6 +3711,25 @@ class DisTorchPurgeVRAMV2:
                     f"approx {bytes_killed / (1024 * 1024):.1f} MB tracked"
                 )
 
+                # tcon NVFP4 support: after the full HSWQ reset, force ComfyUI to re-run
+                # the loader node on the next prompt. The purge unloads the model from
+                # current_loaded_models, but ComfyUI still caches the loader node output
+                # (the MODEL object). Without re-running the loader, the TC (W4A4) stack
+                # patches applied in load_unet are not re-installed and the 2nd generation
+                # produces noise. Setting the unload_models + free_memory queue flags makes
+                # the executor drop cached outputs so the loader re-arms the TC stack.
+                try:
+                    import server as _srv
+                    _ps = getattr(_srv.PromptServer, "instance", None)
+                    if _ps is not None and getattr(_ps, "prompt_queue", None) is not None:
+                        _pq = _ps.prompt_queue
+                        if not getattr(_pq, "currently_running", False):
+                            _pq.set_flag("unload_models", True)
+                            _pq.set_flag("free_memory", True)
+                            print("HSWQ INT8/NVFP4: tcon NVFP4 - queued model unload/cache reset for next prompt (loader will re-arm TC stack)")
+                except Exception as _e:
+                    print(f"HSWQ INT8/NVFP4: tcon cache-reset flag skipped: {_e}")
+
             except Exception as e:
                 print(f"HSWQ INT8/NVFP4: Error purging models: {e}")
                 import traceback
