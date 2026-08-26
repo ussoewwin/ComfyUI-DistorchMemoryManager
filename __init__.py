@@ -4,7 +4,7 @@ import torch
 import gc
 import logging
 
-__version__ = "2.4.5"
+__version__ = "2.4.6"
 
 # Ensure ComfyUI root is on sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
