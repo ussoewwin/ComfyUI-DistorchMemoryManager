@@ -3342,7 +3342,15 @@ class DisTorchPurgeVRAMV2:
                             if bool(getattr(data, "is_pinned", lambda: False)()):
                                 try:
                                     import comfy.model_management as mm
-                                    mm.unpin_memory(data)
+                                    _pm = getattr(mm, "PINNED_MEMORY", None) or {}
+                                    _ptr = data.data_ptr()
+                                    if _ptr in _pm:
+                                        # Registered with ComfyUI: unpin via mm (keeps bookkeeping in sync).
+                                        mm.unpin_memory(data)
+                                    else:
+                                        # Not pinned by ComfyUI (Detailer/SEGS cache): raw unregister,
+                                        # avoids mm.unpin_memory "not pinned by ComfyUI" warning.
+                                        torch.cuda.cudart().cudaHostUnregister(_ptr)
                                 except Exception:
                                     try:
                                         torch.cuda.cudart().cudaHostUnregister(data.data_ptr())
@@ -3619,8 +3627,14 @@ class DisTorchPurgeVRAMV2:
                                 try:
                                     if bool(obj.is_pinned()):
                                         try:
-                                            if mm is not None:
+                                            _pm2 = getattr(mm, "PINNED_MEMORY", None) or {} if mm is not None else {}
+                                            _optr = obj.data_ptr()
+                                            if mm is not None and _optr in _pm2:
+                                                # Registered with ComfyUI: unpin via mm.
                                                 mm.unpin_memory(obj)
+                                            else:
+                                                # Not pinned by ComfyUI: raw unregister, no warning.
+                                                torch.cuda.cudart().cudaHostUnregister(_optr)
                                         except Exception:
                                             try:
                                                 torch.cuda.cudart().cudaHostUnregister(obj.data_ptr())
