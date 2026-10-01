@@ -273,6 +273,7 @@ def get_sparge_func_dm(sparge_topk=0.5):
     except Exception:
         _k = 0.5
     if not (_k > 0.0) or _k > 1.0:
+        logging.info(f"SpargeAttn: invalid sparge_topk={sparge_topk!r} (kernel requires (0, 1]); using default 0.5")
         _k = 0.5
     sparge_topk = _k
     if sparge_available:
