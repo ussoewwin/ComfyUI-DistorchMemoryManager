@@ -263,17 +263,18 @@ def get_sparge_func_dm(sparge_topk=0.5):
     - seq_len must be >= 128 (kernel assert)
     """
     sparge_version, sparge_available = get_sparge_attn_info()
-    # Widget-order compatibility: 0.0 can arrive from workflows saved before
-    # v2.4.7 (legacy allow_compile boolean mapped onto this float input).
-    # Sanitize instead of failing: non-positive -> default 0.5, clamp to (0, 1].
+    # Sanitize widget inputs:
+    # - None: workflow saved before v2.4.7 (input did not exist yet)
+    # - 0.0 / negative / non-numeric: widget-shifted legacy save (UI shows "0")
+    # - NaN / >1.0: out of range
+    # All map to the default 0.5; values in (0, 1] are kept as-is.
     try:
-        sparge_topk = float(sparge_topk)
+        _k = float(sparge_topk)
     except Exception:
-        sparge_topk = 0.5
-    if sparge_topk <= 0.0:
-        sparge_topk = 0.5
-    elif sparge_topk > 1.0:
-        sparge_topk = 1.0
+        _k = 0.5
+    if not (_k > 0.0) or _k > 1.0:
+        _k = 0.5
+    sparge_topk = _k
     if sparge_available:
         logging.info(f"Patching comfy attention to use SpargeAttn-hswq {sparge_version or 'unknown'} (spas_sage_hswq_attn, topk={sparge_topk})")
     else:
@@ -476,14 +477,22 @@ class PatchSageAttentionDM():
     DESCRIPTION = "Experimental node for patching attention mode. This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option."
     CATEGORY = "Memory"
 
-    def patch(self, model, sage_attention, sparge_topk=0.5, allow_compile=False):
+    def patch(self, model, sage_attention, sparge_topk=None, allow_compile=False):
         model_clone = model.clone()
         
         @torch.compiler.disable()
         def patch_attention_enable(model):
             if sage_attention != "disabled":
                 if sage_attention == "spargeattn":
-                    new_attention = get_sparge_func_dm(sparge_topk=sparge_topk)
+                    # sparge_topk may arrive as None (old workflows without the
+                    # input) or 0.0 (widget-shifted legacy save shown as "0" in
+                    # the UI). get_sparge_func_dm sanitizes both to 0.5.
+                    _topk = sparge_topk
+                    try:
+                        _topk = float(_topk) if _topk is not None else None
+                    except Exception:
+                        _topk = None
+                    new_attention = get_sparge_func_dm(sparge_topk=_topk)
                 else:
                     new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
                 def attention_override_sage(func, *args, **kwargs):
