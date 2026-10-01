@@ -469,7 +469,7 @@ class PatchSageAttentionDM():
         },
         "optional": {
             "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."}),
-            "sparge_topk": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "SpargeAttn mode only: KV block keep ratio (higher = more accurate, lower = more sparse/faster). 0 or invalid value -> default 0.5. Ignored by other modes. Kept after allow_compile so workflows saved before v2.4.7 load unchanged."})
+            "sparge_topk": ("COMBO", {"options": ["0.05", "0.1", "0.15", "0.2", "0.25", "0.3", "0.35", "0.4", "0.45", "0.5", "0.55", "0.6", "0.65", "0.7", "0.75", "0.8", "0.85", "0.9", "0.95", "1.0"], "default": "0.5", "tooltip": "SpargeAttn mode only: KV block keep ratio. Higher = more accurate, lower = faster. 1.0 = compute all blocks (no skipping). Kept after allow_compile so workflows saved before v2.4.7 load unchanged. String-based COMBO so the UI can never hold a broken value like 0. "})
             }
         }
 
@@ -490,6 +490,9 @@ class PatchSageAttentionDM():
                     # the UI). get_sparge_func_dm sanitizes both to 0.5.
                     _topk = sparge_topk
                     try:
+                        # COMBO UI stores strings; legacy workflows may carry a
+                        # float, or a shifted/garbage value. All funnel through
+                        # get_sparge_func_dm's sanitizer.
                         _topk = float(_topk) if _topk is not None else None
                     except Exception:
                         _topk = None
