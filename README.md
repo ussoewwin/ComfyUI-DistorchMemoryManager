@@ -185,7 +185,7 @@ This is a completely original implementation designed specifically for Distorch 
     * `sageattn_qk_int8_pv_fp8_cuda++`: CUDA implementation (QK int8, PV FP8, optimized)
     * `sageattn3`: SageAttention 3 implementation (Blackwell support)
     * `sageattn3_per_block_mean`: SageAttention 3 implementation (per-block mean version)
-    * `spargeattn`: **SpargeAttn-hswq** (v2.4.7): two-stage block-sparse attention based on SageAttention2++ quantized kernels via the `spas_sage_hswq_attn` package (Owner's fork, coexists with official `sageattention`). Requires the package to be installed in the ComfyUI Python environment (`pip install` the built wheel from the SpargeAttn-hswq repo). Constraint fallbacks to PyTorch/SDPA with logged notices: attention mask present, headdim not in 64/128, or seq_len < 128. Use the `sparge_topk` input to trade accuracy vs speed (0.5 default; lower = more sparse/faster).
+    * `spargeattn`: **SpargeAttn-hswq** (v2.4.7): two-stage block-sparse attention based on SageAttention2++ quantized kernels via the `spas_sage_hswq_attn` package (Owner's fork, coexists with official `sageattention`). **Prebuilt Windows wheels are published on Hugging Face: [Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows](https://huggingface.co/ussoewwin/Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows)** ? install the matching wheel (e.g. `pip install spas_sage_hswq_attn-1.0.0+cu132torch2.14.0cxx11abitrue-cp313-cp313-win_amd64.whl` for Python 3.13 / torch 2.14 / CUDA 13.2; pick the `cp3xx` matching your Python and the `torch2.xx`/`cu1xx` matching your environment). Constraint fallbacks to PyTorch/SDPA with logged notices: attention mask present, headdim not in 64/128, or seq_len < 128. Use the `sparge_topk` input to trade accuracy vs speed (0.5 default; lower = more sparse/faster).
   * `sparge_topk` (optional): KV block keep ratio for `spargeattn` mode only (default 0.5, valid range (0, 1.0]). Higher keeps more KV blocks (more accurate, less acceleration); lower skips more blocks (faster, less accurate). `sparge_topk=1.0` computes all blocks (no skipping). **0 or invalid values are sanitized to 0.5 at run time with a log line** (the kernel computes `selected = topk * K`, so 0 would select zero blocks). Ignored by all other modes.
   * `allow_compile`: Allow torch.compile for SageAttention function (requires sageattn 2.2.0 or higher, default: False)
 * **Use Case**: Use this node to replace ComfyUI's attention mechanism with SageAttention for better memory efficiency and performance. The node patches attention on each model execution and automatically cleans up afterward.
@@ -213,8 +213,9 @@ cd ComfyUI-DistorchMemoryManager
 pip install -r requirements.txt
 ```
 
-3. Restart ComfyUI
-4. Nodes will appear in the "Memory" category in the node palette
+3. (For SageAttention / SpargeAttn nodes) Install prebuilt wheels for Windows from the [Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows](https://huggingface.co/ussoewwin/Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows) Hugging Face repo — `sageattention` (SA2), `sageattn3` (SA3), and `spas_sage_hswq_attn` (SpargeAttn-hswq, used by the `spargeattn` mode) are published there for multiple Python/torch/CUDA combinations. Pick the wheel matching your environment (`cp3xx` = Python version, `torch2.xx` / `cu1xx` = torch/CUDA build).
+4. Restart ComfyUI
+5. Nodes will appear in the "Memory" category in the node palette
 
 ## Usage
 
