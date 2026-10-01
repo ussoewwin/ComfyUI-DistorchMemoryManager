@@ -185,7 +185,7 @@
     * `sageattn_qk_int8_pv_fp8_cuda++`：CUDA（QK int8，PV FP8，优化版）
     * `sageattn3`：SageAttention 3（Blackwell）
     * `sageattn3_per_block_mean`：SageAttention 3（per-block mean）
-    * `spargeattn`：**SpargeAttn-hswq**（v2.4.7）：基于 SageAttention2++ 量化内核的两阶段块稀疏注意力，通过 `spas_sage_hswq_attn` 包（Owner fork，与官方 `sageattention` 共存）实现。**预构建 Windows wheel 已发布在 Hugging Face：[Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows](https://huggingface.co/ussoewwin/Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows)** —— 选择匹配的 wheel 安装（cp3xx = Python 版本，torch2.xx / cu1xx = torch/CUDA 构建）。存在约束时回退到 PyTorch/SDPA 并输出日志：带注意力掩码、headdim 不是 64/128、或 seq_len < 128。用 `sparge_topk` 输入权衡精度与速度（默认 0.5；越低越稀疏/越快）。
+    * `spargeattn`：**SpargeAttn-hswq**（v2.4.7）：基于 SageAttention2++ 量化内核的两阶段块稀疏注意力，通过 `spas_sage_hswq_attn` 包（Owner fork，与官方 `sageattention` 共存）实现。**预构建 Windows wheel 已发布在 Hugging Face：[Sage-Attention-and-Sparge-Attention-HSWQ](https://huggingface.co/ussoewwin/Sage-Attention-and-Sparge-Attention-HSWQ)** —— 选择匹配的 wheel 安装（cp3xx = Python 版本，torch2.xx / cu1xx = torch/CUDA 构建）。存在约束时回退到 PyTorch/SDPA 并输出日志：带注意力掩码、headdim 不是 64/128、或 seq_len < 128。用 `sparge_topk` 输入权衡精度与速度（默认 0.5；越低越稀疏/越快）。
   * `sparge_topk`（可选）：仅 `spargeattn` 模式使用的 KV 块保留比例（默认 0.5，范围 0.05–1.0）。越高保留越多块（更准确、加速少）；越低跳过越多块（更快、精度低）。其他模式忽略此参数。
   * `allow_compile`：允许对 SageAttention 使用 torch.compile（需 sageattn 2.2.0+，默认 False）
 * **使用场景**：用 SageAttention 替换注意力以节省显存、提升性能。每次模型执行时打补丁并在结束后自动清理。
@@ -213,7 +213,7 @@ cd ComfyUI-DistorchMemoryManager
 pip install -r requirements.txt
 ```
 
-3. (For SageAttention / SpargeAttn nodes) Install prebuilt Windows wheels from the [Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows](https://huggingface.co/ussoewwin/Sage-Attention-and-Sparge-Attention-HSWQ-for-Windows) Hugging Face repo - `sageattention` (SA2), `sageattn3` (SA3), and `spas_sage_hswq_attn` (SpargeAttn-hswq, used by the `spargeattn` mode) are published for multiple Python/torch/CUDA combos. Pick the wheel matching your environment (`cp3xx` = Python version, `torch2.xx` / `cu1xx` = torch/CUDA build).
+3. (For SageAttention / SpargeAttn nodes) Install prebuilt Windows wheels from the [Sage-Attention-and-Sparge-Attention-HSWQ](https://huggingface.co/ussoewwin/Sage-Attention-and-Sparge-Attention-HSWQ) Hugging Face repo - `sageattention` (SA2), `sageattn3` (SA3), and `spas_sage_hswq_attn` (SpargeAttn-hswq, used by the `spargeattn` mode) are published for multiple Python/torch/CUDA combos. Pick the wheel matching your environment (`cp3xx` = Python version, `torch2.xx` / `cu1xx` = torch/CUDA build).
 4. 重启 ComfyUI
 5. 节点将出现在节点面板的「Memory」分类中
 
