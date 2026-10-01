@@ -15,8 +15,9 @@ except Exception:
     mm = None
 
 # SageAttention modes
-sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
+sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean", "spargeattn"]
 _logged_sage_fallback_messages = set()
+_logged_sparge_fallback_messages = set()
 
 
 # Flash-Attention version detection (independent from model_management)
@@ -126,6 +127,27 @@ def get_sage_attention3_info():
     return sage3_version, is_available, supports_blackwell
 
 
+# SpargeAttn-hswq (spas_sage_hswq_attn) version detection (independent from model_management)
+def get_sparge_attn_info():
+    """
+    Get SpargeAttn-hswq package (spas_sage_hswq_attn) version information.
+    Returns: (version, is_available)
+    """
+    sparge_version = None
+    is_available = False
+    try:
+        import spas_sage_hswq_attn  # noqa: F401
+        is_available = True
+    except Exception:
+        return sparge_version, is_available
+    try:
+        from importlib.metadata import version as _pkg_version
+        sparge_version = _pkg_version("spas_sage_hswq_attn")
+    except Exception:
+        sparge_version = "unknown"
+    return sparge_version, is_available
+
+
 # Check if Flash-Attention is enabled (independent from model_management)
 def is_flash_attention_enabled():
     """
@@ -220,6 +242,144 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
             
             return out.transpose(1, 2) if tensor_layout == "NHD" else out
 
+    tail = _build_sage_attention_tail(sage_func, allow_compile)
+    return tail
+
+
+def get_sparge_func_dm(sparge_topk=0.5):
+    """
+    Build the SpargeAttn-hswq attention function (completely separate from the
+    SageAttention path above).
+
+    Uses spas_sage_hswq_attn.spas_sage2_attn_meansim_topk_cuda (the fork's
+    recommended plug-and-play API, based on SageAttention2++ quantized
+    kernels with two-stage block-sparse filtering).
+
+    Constraints (handled by explicit fallback to PyTorch SDPA, never silent
+    quality loss without a log line):
+    - No attention mask support (the API accepts attn_mask but ignores it;
+      pass-through would silently drop masking)
+    - headdim must be 64 or 128 (kernel assert)
+    - seq_len must be >= 128 (kernel assert)
+    """
+    sparge_version, sparge_available = get_sparge_attn_info()
+    if sparge_available:
+        logging.info(f"Patching comfy attention to use SpargeAttn-hswq {sparge_version or 'unknown'} (spas_sage_hswq_attn, topk={sparge_topk})")
+    else:
+        logging.warning("spas_sage_hswq_attn not installed; SpargeAttn mode will use pytorch attention fallback for every call.")
+
+    from torch.nn.functional import scaled_dot_product_attention as sdpa
+
+    def sparge_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
+        # Explicit constraint checks -> SDPA fallback (SpargeAttn kernels do not
+        # consume attn_mask, and only headdim 64/128 with seq_len>=128 work).
+        headdim = q.size(-1)
+        seq_len = q.size(-2) if tensor_layout == "HND" else q.size(-3)
+        use_fallback = False
+        if attn_mask is not None:
+            use_fallback = True
+        if headdim not in (64, 128):
+            use_fallback = True
+        if seq_len < 128:
+            use_fallback = True
+
+        if use_fallback:
+            if tensor_layout == "NHD":
+                out = sdpa(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
+            else:
+                q_s, k_s, v_s = [x.transpose(1, 2) for x in (q, k, v)]
+                out = sdpa(q_s, k_s, v_s, attn_mask=attn_mask, is_causal=is_causal)
+                out = out.transpose(1, 2)
+            return out
+
+        if not sparge_available:
+            raise RuntimeError("spas_sage_hswq_attn is not installed")
+
+        from spas_sage_hswq_attn import spas_sage2_attn_meansim_topk_cuda
+
+        # API expects HND layout.
+        if tensor_layout == "NHD":
+            q_s, k_s, v_s = [x.transpose(1, 2) for x in (q, k, v)]
+        else:
+            q_s, k_s, v_s = q, k, v
+        out = spas_sage2_attn_meansim_topk_cuda(
+            q_s, k_s, v_s,
+            topk=float(sparge_topk),
+            is_causal=is_causal,
+            tensor_layout="HND",
+        )
+        return out.transpose(1, 2) if tensor_layout == "NHD" else out
+
+    sparge_func = torch.compiler.disable()(sparge_func)
+
+    @wrap_attn
+    def attention_sparge(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
+        in_dtype = v.dtype
+        if q.dtype == torch.float32 or k.dtype == torch.float32 or v.dtype == torch.float32:
+            q, k, v = q.to(torch.float16), k.to(torch.float16), v.to(torch.float16)
+        if skip_reshape:
+            b, _, _, dim_head = q.shape
+            tensor_layout = "HND"
+        else:
+            b, _, dim_head = q.shape
+            dim_head //= heads
+            q, k, v = map(
+                lambda t: t.view(b, -1, heads, dim_head),
+                (q, k, v),
+            )
+            tensor_layout = "NHD"
+
+        if mask is not None:
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            if mask.ndim == 3:
+                mask = mask.unsqueeze(1)
+        use_pytorch_fallback = False
+        try:
+            out = sparge_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout).to(in_dtype)
+        except Exception as e:
+            err = str(e)
+            if "not installed" in err:
+                msg_key = "spas_not_installed"
+                if msg_key not in _logged_sparge_fallback_messages:
+                    logging.warning("spas_sage_hswq_attn is not installed; using pytorch attention fallback (SpargeAttn mode).")
+                    _logged_sparge_fallback_messages.add(msg_key)
+            elif "headdim should be in" in err or "seq_len should be not less than" in err:
+                msg_key = "sparge_shape_" + err.split(" ")[0][:24]
+                if msg_key not in _logged_sparge_fallback_messages:
+                    logging.info(f"SpargeAttn shape constraint hit ({err.strip()[:80]}); using pytorch attention fallback.")
+                    _logged_sparge_fallback_messages.add(msg_key)
+            else:
+                logging.error("Error running SpargeAttn attention: {}, using pytorch attention instead.".format(e))
+            use_pytorch_fallback = True
+
+        if use_pytorch_fallback:
+            if tensor_layout == "NHD":
+                q, k, v = map(lambda t: t.transpose(1, 2), (q, k, v))
+            return comfy_attention.attention_pytorch(
+                q, k, v, heads,
+                mask=mask,
+                skip_reshape=True,
+                skip_output_reshape=skip_output_reshape,
+                **kwargs
+            ).to(in_dtype)
+
+        if tensor_layout == "HND":
+            if not skip_output_reshape:
+                out = (
+                    out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+                )
+        else:
+            if skip_output_reshape:
+                out = out.transpose(1, 2)
+            else:
+                out = out.reshape(b, -1, heads * dim_head)
+        return out
+    return attention_sparge
+
+
+# --- SageAttention attention wrapper (unchanged, dedicated path) ---
+def _build_sage_attention_tail(sage_func, allow_compile):
     if not allow_compile:
         sage_func = torch.compiler.disable()(sage_func)
     
@@ -295,6 +455,7 @@ class PatchSageAttentionDM():
             "sage_attention": (sageattn_modes, {"default": False, "tooltip": "Global patch comfy attention to use sageattn, once patched to revert back to normal you would need to run this node again with disabled option."}),
         },
         "optional": {
+            "sparge_topk": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 1.0, "step": 0.05, "tooltip": "SpargeAttn mode only: KV block keep ratio (higher = more accurate, lower = more sparse/faster). Ignored by other modes."}),
             "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."})
             }
         }
@@ -304,13 +465,16 @@ class PatchSageAttentionDM():
     DESCRIPTION = "Experimental node for patching attention mode. This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option."
     CATEGORY = "Memory"
 
-    def patch(self, model, sage_attention, allow_compile=False):
+    def patch(self, model, sage_attention, sparge_topk=0.5, allow_compile=False):
         model_clone = model.clone()
         
         @torch.compiler.disable()
         def patch_attention_enable(model):
             if sage_attention != "disabled":
-                new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
+                if sage_attention == "spargeattn":
+                    new_attention = get_sparge_func_dm(sparge_topk=sparge_topk)
+                else:
+                    new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
                 def attention_override_sage(func, *args, **kwargs):
                     return new_attention.__wrapped__(*args, **kwargs)
                 

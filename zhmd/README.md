@@ -185,14 +185,17 @@
     * `sageattn_qk_int8_pv_fp8_cuda++`：CUDA（QK int8，PV FP8，优化版）
     * `sageattn3`：SageAttention 3（Blackwell）
     * `sageattn3_per_block_mean`：SageAttention 3（per-block mean）
+    * `spargeattn`：**SpargeAttn-hswq**（v2.4.7）：基于 SageAttention2++ 量化内核的两阶段块稀疏注意力，通过 `spas_sage_hswq_attn` 包（Owner fork，与官方 `sageattention` 共存）实现。需要已在 ComfyUI Python 环境中安装该包（用 SpargeAttn-hswq 仓库构建的 wheel）。存在约束时回退到 PyTorch/SDPA 并输出日志：带注意力掩码、headdim 不是 64/128、或 seq_len < 128。用 `sparge_topk` 输入权衡精度与速度（默认 0.5；越低越稀疏/越快）。
+  * `sparge_topk`（可选）：仅 `spargeattn` 模式使用的 KV 块保留比例（默认 0.5，范围 0.05–1.0）。越高保留越多块（更准确、加速少）；越低跳过越多块（更快、精度低）。其他模式忽略此参数。
   * `allow_compile`：允许对 SageAttention 使用 torch.compile（需 sageattn 2.2.0+，默认 False）
 * **使用场景**：用 SageAttention 替换注意力以节省显存、提升性能。每次模型执行时打补丁并在结束后自动清理。
 * **技术细节**：
   * 使用 ComfyUI 回调（ON_PRE_RUN、ON_CLEANUP）动态打补丁
   * 自动检测 SageAttention 版本并记录详情
+  * SpargeAttn 模式：使用独立的 `get_sparge_func_dm()` 专用代码路径（与 SageAttention 各模式完全分离），调用 `spas_sage_hswq_attn.spas_sage2_attn_meansim_topk_cuda`（INT8 QK + FP8 PV 量化内核 + 两阶段块稀疏过滤）；E2-a scale sweep 可用 `SPARGE_SCALE_SWEEP=1` 开启
   * 禁用时检测并记录 Flash-Attention 状态
   * 通过 wrap_attn 兼容 ComfyUI 注意力格式
-  * 支持多种实现（CUDA、Triton、SageAttention 3）
+  * 支持多种实现（CUDA、Triton、SageAttention 3、SpargeAttn）
 
 ## 安装
 

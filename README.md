@@ -185,11 +185,14 @@ This is a completely original implementation designed specifically for Distorch 
     * `sageattn_qk_int8_pv_fp8_cuda++`: CUDA implementation (QK int8, PV FP8, optimized)
     * `sageattn3`: SageAttention 3 implementation (Blackwell support)
     * `sageattn3_per_block_mean`: SageAttention 3 implementation (per-block mean version)
+    * `spargeattn`: **SpargeAttn-hswq** (v2.4.7): two-stage block-sparse attention based on SageAttention2++ quantized kernels via the `spas_sage_hswq_attn` package (Owner's fork, coexists with official `sageattention`). Requires the package to be installed in the ComfyUI Python environment (`pip install` the built wheel from the SpargeAttn-hswq repo). Constraint fallbacks to PyTorch/SDPA with logged notices: attention mask present, headdim not in 64/128, or seq_len < 128. Use the `sparge_topk` input to trade accuracy vs speed (0.5 default; lower = more sparse/faster).
+  * `sparge_topk` (optional): KV block keep ratio for `spargeattn` mode only (default 0.5, range 0.05–1.0). Higher keeps more KV blocks (more accurate, less acceleration); lower skips more blocks (faster, less accurate). Ignored by all other modes.
   * `allow_compile`: Allow torch.compile for SageAttention function (requires sageattn 2.2.0 or higher, default: False)
 * **Use Case**: Use this node to replace ComfyUI's attention mechanism with SageAttention for better memory efficiency and performance. The node patches attention on each model execution and automatically cleans up afterward.
 * **Technical Details**:
   * Uses ComfyUI's callback system (ON_PRE_RUN, ON_CLEANUP) to patch attention dynamically
   * Automatically detects SageAttention version and logs detailed information
+  * SpargeAttn mode: uses a dedicated `get_sparge_func_dm()` code path (completely separate from the SageAttention modes) calling `spas_sage_hswq_attn.spas_sage2_attn_meansim_topk_cuda` (INT8 QK + FP8 PV quantized kernels with two-stage block-sparse filtering); per-head hyperparameters use the fork's plug-and-play defaults, E2-a scale sweep available via `SPARGE_SCALE_SWEEP=1`
   * Handles Flash-Attention state detection and logging when disabled
   * Compatible with ComfyUI's attention function format via wrap_attn decorator
   * Supports multiple SageAttention implementations (CUDA, Triton, SageAttention 3)
