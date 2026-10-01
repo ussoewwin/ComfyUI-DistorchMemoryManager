@@ -263,6 +263,17 @@ def get_sparge_func_dm(sparge_topk=0.5):
     - seq_len must be >= 128 (kernel assert)
     """
     sparge_version, sparge_available = get_sparge_attn_info()
+    # Widget-order compatibility: 0.0 can arrive from workflows saved before
+    # v2.4.7 (legacy allow_compile boolean mapped onto this float input).
+    # Sanitize instead of failing: non-positive -> default 0.5, clamp to (0, 1].
+    try:
+        sparge_topk = float(sparge_topk)
+    except Exception:
+        sparge_topk = 0.5
+    if sparge_topk <= 0.0:
+        sparge_topk = 0.5
+    elif sparge_topk > 1.0:
+        sparge_topk = 1.0
     if sparge_available:
         logging.info(f"Patching comfy attention to use SpargeAttn-hswq {sparge_version or 'unknown'} (spas_sage_hswq_attn, topk={sparge_topk})")
     else:
@@ -455,8 +466,8 @@ class PatchSageAttentionDM():
             "sage_attention": (sageattn_modes, {"default": False, "tooltip": "Global patch comfy attention to use sageattn, once patched to revert back to normal you would need to run this node again with disabled option."}),
         },
         "optional": {
-            "sparge_topk": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 1.0, "step": 0.05, "tooltip": "SpargeAttn mode only: KV block keep ratio (higher = more accurate, lower = more sparse/faster). Ignored by other modes."}),
-            "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."})
+            "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."}),
+            "sparge_topk": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "SpargeAttn mode only: KV block keep ratio (higher = more accurate, lower = more sparse/faster). 0 or invalid value -> default 0.5. Ignored by other modes. Kept after allow_compile so workflows saved before v2.4.7 load unchanged."})
             }
         }
 
