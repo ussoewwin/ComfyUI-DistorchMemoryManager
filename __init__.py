@@ -339,9 +339,7 @@ except ImportError as e:
 
 
 # Register nodes with ComfyUI
-NODE_CLASS_MAPPINGS = {
-    "ModelPatchMemoryCleaner": ModelPatchMemoryCleaner,
-}
+NODE_CLASS_MAPPINGS = {}
 
 # Register Memory Manager nodes if available
 if MemoryManager is not None:
@@ -366,9 +364,7 @@ else:
 
 print(f"[ComfyUI-VRAM-Manager] Total registered nodes: {list(NODE_CLASS_MAPPINGS.keys())}")
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "ModelPatchMemoryCleaner": "Model Patch Memory Cleaner",
-}
+NODE_DISPLAY_NAME_MAPPINGS = {}
 
 # Register Memory Manager node display names if available
 if MemoryManager is not None:
