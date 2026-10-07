@@ -2,13 +2,6 @@
 Purge VRAM V2 node for DistorchMemoryManager
 """
 import torch
-
-# Loader detection flags that must NOT be purged from cached model Linears.
-# (They are tiny bool/int markers; purging them makes the next prompt run
-#  with flagged=0 because ComfyUI reuses the cached ModelPatcher without
-#  re-running the HSWQ loader's stock-load arm.)
-_HSWQ_KEEP_LOADER_FLAGS = frozenset({
-})
 import gc
 import sys
 import os
@@ -2221,6 +2214,9 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_nvfp4_w_plain",
                         "_hswq_nvfp4_alpha",
                         "_hswq_nvfp4_no_cudagraph",
+                        "_hswq_nvfp4_convrot",
+                        "_hswq_nvfp4_convrot_groupsize",
+                        "_hswq_nvfp4_convrot_parity",
                         "_hswq_nvfp4",
                         "_hswq_nvfp4_act_scale",
                         "_hswq_nvfp4_scale_placeholder",
@@ -2228,9 +2224,13 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_zi_nvfp4_baked_keys",
                         "_hswq_zi_nvfp4_baked_uuid",
                         # INT8 Linear protect ConvRot
+                        "_hswq_int8_convrot",
+                        "_hswq_int8_convrot_groupsize",
                         "_hswq_int8_baked_keys",
                         "_hswq_int8_baked_uuid",
                         # INT8 Conv2d ConvRot (comfy_quant_int8 QuantConv2d)
+                        "_hswq_convrot",
+                        "_hswq_convrot_groupsize",
                         # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps / LoRA residuals)
                         "_hswq_krea2_nvfp4_pack",
                         "_hswq_krea2_nvfp4_baked_keys",
@@ -3141,7 +3141,13 @@ class DisTorchPurgeVRAMV2:
                         "_hswq_int8_baked_uuid",
                         "_hswq_zi_nvfp4_baked_keys",
                         "_hswq_zi_nvfp4_baked_uuid",
+                        "_hswq_nvfp4_convrot",
+                        "_hswq_nvfp4_convrot_groupsize",
                         "_hswq_nvfp4",
+                        "_hswq_int8_convrot",
+                        "_hswq_int8_convrot_groupsize",
+                        "_hswq_convrot",
+                        "_hswq_convrot_groupsize",
                         # Krea2 ConvRot NVFP4 (bake bookkeeping / pack stamps / LoRA residuals)
                         "_hswq_krea2_nvfp4_pack",
                         "_hswq_krea2_nvfp4_baked_keys",
@@ -3390,6 +3396,51 @@ class DisTorchPurgeVRAMV2:
                 # while leaving dead refs in module-level dicts — clear them.
                 print("HSWQ INT8/NVFP4: Method 2c - Reset comfy_kitchen CUDA caches...")
                 _reset_comfy_kitchen_cuda_caches()
+
+                # Method 2d - HSWQ purge-aware gate reconciliation (2026-10-07).
+                # This purge peels HSWQ overlays (ZI bake/parity, Linear ver=8
+                # wraps, INT8 protect load arm, Krea2 stack, SDXL product TC)
+                # for an SDXL handoff, but HSWQ's apply_* gates are module-level
+                # booleans the peel does not know about. When the NEXT prompt
+                # reloads Z Image ConvRot NVFP4 / Qwen+ControlNet ConvRot INT8 /
+                # Krea2 / SDXL in the SAME process, a stale gate=True makes the
+                # load path skip re-application and sampling runs on a
+                # half-peeled stack (alternating good/corrupt prompts).
+                # hswq_purge_rearm_state() inspects the live wrapper stamps and
+                # resets ONLY each family gate whose layer is actually missing
+                # (branch separation: ZI / SDXL-product / Krea2 / INT8 each has
+                # an independent predicate and its own global). It never wraps
+                # anything and never touches tensors. Safe no-op when HSWQ's
+                # reconciliation module is absent (older HSWQ) — purge behavior
+                # then equals the previous version exactly.
+                print("HSWQ INT8/NVFP4: Method 2d - Reconcile HSWQ apply gates after peel...")
+                def _hswq_find_rearm_fn():
+                    # Plain getattr only: HSWQ reconciliation module is registered
+                    # by its real dotted name; no dir(), no __getattr__ probing
+                    # (kornia/basicsr LazyLoader hazard, same reason as above).
+                    for _rn, _rmod in _sys_modules():
+                        if _rmod is None:
+                            continue
+                        _rns = str(_rn)
+                        if not _rns.endswith(".hswq_purge_rearm") and "hswq_purge_rearm" not in _rns:
+                            continue
+                        try:
+                            fn = getattr(_rmod, "hswq_purge_rearm_state", None)
+                        except Exception:
+                            continue
+                        if callable(fn):
+                            return fn
+                    return None
+
+                _hswq_rearm_fn = _hswq_find_rearm_fn()
+                if _hswq_rearm_fn is None:
+                    print("HSWQ INT8/NVFP4: Method 2d skipped (no hswq_purge_rearm; HSWQ pre-2.6?)")
+                else:
+                    try:
+                        _rearm_report = _hswq_rearm_fn()
+                        print(f"HSWQ INT8/NVFP4: Method 2d reconcile -> {_rearm_report}")
+                    except Exception as e_rearm:
+                        print(f"HSWQ INT8/NVFP4: Method 2d reconcile failed: {e_rearm}")
 
                 # Reset INT8 LoRA counters (dict-only, no dir())
                 print("HSWQ INT8/NVFP4: Resetting comfy_quant_int8 counters...")
