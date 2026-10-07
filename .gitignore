@@ -42,3 +42,6 @@ Thumbs.db
 # Release notes at repo root (managed via GitHub releases)
 /release_notes_*.md
 
+
+# OpenClaw agent memory (local only)
+/memory/
