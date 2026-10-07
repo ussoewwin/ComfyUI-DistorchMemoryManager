@@ -11,7 +11,7 @@
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/icon.png" width="128">
 </p>
 
-**ComfyUI-VRAM-Manager**（原 ComfyUI-DistorchMemoryManager）是 ComfyUI 的独立显存管理自定义节点。提供 Distorch 显存管理功能，高效处理 GPU/CPU 内存。支持清理 SeedVR2、Qwen3-VL、Nunchaku 模型（FLUX/Z-Image/Qwen-Image）、HSWQ 以及 Ollama 服务端显存。包含面向 ModelPatchLoader 工作流的 Model Patch Memory Cleaner。通过 NVML 自动检测非 PyTorch 的 VRAM 占用，在多进程环境下防止 OOM。
+**ComfyUI-VRAM-Manager**（原 ComfyUI-DistorchMemoryManager）是 ComfyUI 的独立显存管理自定义节点。提供 Distorch 显存管理功能，高效处理 GPU/CPU 内存。支持清理 SeedVR2、Qwen3-VL、Nunchaku 模型（FLUX/Z-Image/Qwen-Image）、HSWQ 以及 Ollama 服务端显存。在 General Purge VRAM V2 中内置了面向 ModelPatchLoader 工作流的模型补丁清理（clear_model_patches）功能。通过 NVML 自动检测非 PyTorch 的 VRAM 占用，在多进程环境下防止 OOM。
 
 ## 概述
 
@@ -45,36 +45,16 @@
 
 ---
 
-### 四类节点
+### 三类节点
 
-#### Model Patch Memory Cleaner（v1.2.0 新增）
-
-<p align="center">
-  <img src="../png/mpatch.png" width="400">
-</p>
-
-* **说明**：专用于 ModelPatcher 已加载模型补丁的内存清理器
-* **功能**：清理通过 ModelPatchLoader 加载的模型补丁，防止放大时 OOM
-* **输入**：任意类型 (ANY) 透传
-* **输出**：任意类型 (ANY) 透传
-* **选项**：
-  * `clear_model_patches`：清理 ModelPatchLoader 加载的模型补丁（默认：True）
-  * `clean_gpu`：清理 GPU 内存（默认：True）
-  * `force_gc`：强制垃圾回收（默认：True）
-* **使用场景**：在 ModelPatchLoader（如 Z-Image ControlNet、QwenImage BlockWise ControlNet、SigLIP MultiFeat Proj）之后、放大操作之前放置本节点以防 OOM。面向通过 ModelPatchLoader 加载的补丁模型格式，与标准 ControlNet 不同。
-* **技术细节**：
-  * 检测带有 `additional_models` 或 `attachments` 中含模型补丁的 ModelPatcher 实例
-  * 安全地从 VRAM 卸载模型补丁
-  * 执行 `cleanup_models_gc()` 防止内存泄漏
-
-#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 / v2.4.2 / v2.4.3 增强）
+#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 / v2.4.2 / v2.4.3 / v2.4.8 增强）
 
 <p align="center">
   <img src="../png/pvram2.png" width="400">
 </p>
 
-* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关；v2.4.2 在 **`HSWQ`** 下方新增 **`Ollama`** 开关，用于零残留清理 Ollama 服务端显存；v2.4.3 在 HSWQ Method **2c** 中额外清空 HSWQ **NVFP4** 运行时池 / CUDA graphs，避免 purge 后第二次 ConvRot NVFP4 生成出现 `quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`
-* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。v2.4.2 增加 **`Ollama`** 清理，覆盖 **comfyui-ollama** 与 **comfyui-ollama-describer**（含 describer 默认 `keep_model_alive=-1`）。v2.4.3 在 kitchen 重置之外，通过 `sys.modules` 扫描 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`；优先从 `nodes/purge_vram.py` 导入；日志前缀 `HSWQ INT8/NVFP4:`。支持 SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）、HSWQ（含 NVFP4）及 Ollama 服务端卸载。
+* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、ModelPatchLoader 模型补丁清理、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关；v2.4.2 在 **`HSWQ`** 下方新增 **`Ollama`** 开关，用于零残留清理 Ollama 服务端显存；v2.4.3 在 HSWQ Method **2c** 中额外清空 HSWQ **NVFP4** 运行时池 / CUDA graphs，避免 purge 后第二次 ConvRot NVFP4 生成出现 `quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`
+* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。v2.4.2 增加 **`Ollama`** 清理，覆盖 **comfyui-ollama** 与 **comfyui-ollama-describer**（含 describer 默认 `keep_model_alive=-1`）。v2.4.3 在 kitchen 重置之外，通过 `sys.modules` 扫描 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`；优先从 `nodes/purge_vram.py` 导入；日志前缀 `HSWQ INT8/NVFP4:`。v2.4.8 全面将独立的 **Model Patch Memory Cleaner** 功能完全合流入 `clear_model_patches` 开关，补齐即时 CUDA 缓存刷新、GPU 同步与垃圾回收。支持模型补丁、SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）、HSWQ（含 NVFP4）及 Ollama 服务端卸载。
 * **输入**：任意类型 (ANY) 透传
 * **选项**：
    * `purge_cache`：执行 `gc.collect()`、刷新 CUDA 缓存、调用 `torch.cuda.ipc_collect()`
@@ -84,6 +64,11 @@
      * 将所有模型标记为未使用
      * 通过 `model_unload()` 积极卸载
      * 若可用则调用 `soft_empty_cache()`
+   * `clear_model_patches`：清理 ModelPatchLoader 加载的模型补丁（默认：True；完全继承并统一原独立 Model Patch Memory Cleaner 功能）
+     * 清理通过 ModelPatchLoader 加载的模型补丁（如 Z-Image ControlNet、QwenImage BlockWise ControlNet、SigLIP MultiFeat Proj），防止放大时 OOM
+     * 检测带有 `additional_models` 或 `attachments` 中含模型补丁的 ModelPatcher 实例
+     * 通过 `model_unload()` 安全地从 VRAM 卸载模型补丁，并从 `current_loaded_models` 移除
+     * 执行 `cleanup_models_gc()`，并在卸载后立即执行 `torch.cuda.empty_cache()`、`torch.cuda.synchronize()` 与 `gc.collect()`，即便关闭 `purge_models` 也能即时物理解放显存
    * `purge_seedvr2_models`：从缓存清理 SeedVR2 DiT 与 VAE
      * 清理 SeedVR2 GlobalModelCache 中所有缓存的 DiT
      * 清理所有缓存的 VAE
@@ -146,7 +131,10 @@
   * HSWQ Method **2c** 在 kitchen 重置之外，通过 `sys.modules` 扫描 + `clear_nvfp4_runtime_pools()` 清空 HSWQ **NVFP4** 运行时池 / CUDA graphs
   * 避免 purge 后第二次 ConvRot NVFP4 生成失败（`quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`）
   * 优先从 `nodes/purge_vram.py` 导入 `DisTorchPurgeVRAMV2`；日志前缀 `HSWQ INT8/NVFP4:`
-* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。v2.4.2 针对 comfyui-ollama / comfyui-ollama-describer（尤其 `keep_model_alive=-1`）加载的 Ollama 模型无法被标准 ComfyUI 或 HSWQ 清理单独释放的问题。v2.4.3 针对仅 kitchen Method **2c** 无法清掉的 HSWQ **NVFP4** 运行时池 / CUDA graphs，purge 后下一次 ConvRot NVFP4 生成会失败的问题。
+* **v2.4.8 增强**：
+  * 将独立的 **Model Patch Memory Cleaner** 完整合并进 `DisTorchPurgeVRAMV2` 的 `clear_model_patches` 选项中
+  * 在 `clear_model_patches` 内增加了即时 CUDA 缓存刷新（`torch.cuda.empty_cache()`）、GPU 同步及 GC，即便 `purge_models=False` 也可即时物理解放显存
+* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。v2.4.2 针对 comfyui-ollama / comfyui-ollama-describer（尤其 `keep_model_alive=-1`）加载的 Ollama 模型无法被标准 ComfyUI 或 HSWQ 清理单独释放的问题。v2.4.3 针对仅 kitchen Method **2c** 无法清掉的 HSWQ **NVFP4** 运行时池 / CUDA graphs，purge 后下一次 ConvRot NVFP4 生成会失败的问题。v2.4.8 精简节点列表，将补丁清理合并至 General Purge VRAM V2，避免放置多个冗余清理节点。
 
 #### Memory Manager（高级）
 
@@ -231,7 +219,7 @@ pip install -r requirements.txt
 **ModelPatchLoader 工作流**：
 
 ```
-[ModelPatchLoader] → [QwenImageDiffsynthControlnet] → [Model Patch Memory Cleaner] → [放大节点]
+[ModelPatchLoader] → [QwenImageDiffsynthControlnet] → [General Purge VRAM V2 (clear_model_patches=True)] → [放大节点]
 ```
 
 **通用内存管理**：
@@ -244,10 +232,10 @@ pip install -r requirements.txt
 
 **ModelPatchLoader 工作流（补丁模型格式）**：
 
-* 使用 **Model Patch Memory Cleaner**
+* 使用 **General Purge VRAM V2** (`DisTorchPurgeVRAMV2`)
 * `clear_model_patches: True`
-* `clean_gpu: True`
-* `force_gc: True`
+* `purge_models: False`（可选，保留基础 Diffusion 模型同时卸载补丁模型）
+* `purge_cache: True`
 * **放置位置**：ModelPatchLoader 使用之后、放大之前
 * **注意**：面向 ModelPatchLoader 的补丁格式（如 Z-Image ControlNet、QwenImage BlockWise ControlNet、SigLIP MultiFeat Proj），与标准 ControlNet 不同。
 
@@ -269,7 +257,7 @@ pip install -r requirements.txt
 
 **解决办法**：
 
-1. ModelPatchLoader 工作流：在 ControlNet 使用后使用 **Model Patch Memory Cleaner**
+1. ModelPatchLoader 工作流：在 ControlNet 使用后使用 **General Purge VRAM V2**（`clear_model_patches: True`）
 2. 通用工作流：使用 **Memory Manager**
 3. 启用 `clean_gpu` 与 `reset_virtual_memory`
 4. 必要时启用 `force_gc`
@@ -278,17 +266,16 @@ pip install -r requirements.txt
 
 **解决办法**：
 
-1. 在 QwenImageDiffsynthControlnet（使用 ModelPatchLoader 时）之后添加 **Model Patch Memory Cleaner**
+1. 在 QwenImageDiffsynthControlnet（使用 ModelPatchLoader 时）之后添加 **General Purge VRAM V2**
 2. `clear_model_patches: True`
-3. `clean_gpu: True`
-4. `force_gc: True`
-5. **注意**：适用于 ModelPatchLoader 补丁格式，非标准 ControlNet
+3. 可选设置 `purge_models: False`（若希望在清除补丁的同时保留基础模型）
+4. **注意**：适用于 ModelPatchLoader 补丁格式，非标准 ControlNet
 
 ### UI 损坏
 
 **解决办法**：
 
-1. 使用 **Model Patch Memory Cleaner** 或 **Memory Manager**
+1. 使用 **General Purge VRAM V2** 或 **Memory Manager**
 2. 保持 `clean_cpu` 关闭（若使用 Memory Manager）
 3. 仅启用必要选项
 
@@ -353,7 +340,7 @@ pip install -r requirements.txt
 
 * 扩大页面文件也可减少放大时的 OOM
 * 注意：视频生成推理阶段 VRAM 紧张时，扩页面文件帮助有限
-* ModelPatchLoader 工作流：放大前务必使用 Model Patch Memory Cleaner
+* ModelPatchLoader 工作流：放大前务必使用 General Purge VRAM V2（`clear_model_patches: True`）
 * Qwen3-VL：使用 DisTorchPurgeVRAMV2 且 `purge_qwen3vl_models: True`
 * Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）：`purge_nunchaku_models: True`；SDXL v2.2.0 约可释放 2.5GB
 * SageAttention（v2.3.0）：使用 Patch Sage Attention DM；禁用可将 `sage_attention` 设为 `disabled` 再运行一次
