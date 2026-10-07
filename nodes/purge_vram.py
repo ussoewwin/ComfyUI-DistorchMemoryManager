@@ -114,8 +114,16 @@ class DisTorchPurgeVRAMV2:
                     # Cleanup models GC
                     if hasattr(comfy.model_management, "cleanup_models_gc"):
                         comfy.model_management.cleanup_models_gc()
-            
-            
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    print("GPU memory cleared")
+
+                gc.collect()
+                print("Garbage collection completed")
+
+                print("Model patch memory cleanup completed")
         except Exception as e:
             print(f"Model patch memory cleanup error: {e}")
 
