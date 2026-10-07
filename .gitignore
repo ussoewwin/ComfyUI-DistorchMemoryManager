@@ -43,5 +43,24 @@ Thumbs.db
 /release_notes_*.md
 
 
-# OpenClaw agent memory (local only)
+# OpenClaw agent workspace files (local only)
+/AGENTS.md
+/SOUL.md
+/USER.md
+/TOOLS.md
+/MEMORY.md
+/IDENTITY.md
+/HEARTBEAT.md
+/OUTPUT_RULES.md
+/REMINDER.md
+/.agents/
+/.openclaw/
+/.openclaw-attachments/
+/.opencode/
+/evolution-drafts/
 /memory/
+/projects/
+/config/
+/.rules_*.md
+/rules_*.md
+/sparge_speed_facts.md
