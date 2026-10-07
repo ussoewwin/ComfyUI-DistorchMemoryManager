@@ -4,7 +4,7 @@ import torch
 import gc
 import logging
 
-__version__ = "2.4.8"
+__version__ = "2.4.9"
 
 # Ensure ComfyUI root is on sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -38,18 +38,24 @@ def _install_sage_attention_noise_guard():
     def attention_sage_guarded(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
         if kwargs.get("low_precision_attention", True) is False:
             return comfy_attention.attention_pytorch(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
+        # ComfyUI 0.38.x: native sage path refuses mask when the installed
+        # sageattention package cannot consume attn_mask (SAGE_ATTENTION_SUPPORTS_MASK).
+        # The old guard ignored this and silently dropped masking -> quality bug.
+        sage_supports_mask = getattr(comfy_attention, "SAGE_ATTENTION_SUPPORTS_MASK", True)
+        if mask is not None and not sage_supports_mask:
+            return comfy_attention.attention_pytorch(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
 
         exception_fallback = False
+        enable_gqa = kwargs.get("enable_gqa", False)
         if skip_reshape:
             b, _, _, dim_head = q.shape
             tensor_layout = "HND"
+            if enable_gqa:
+                k, v = comfy.ops.repeat_kv_for_gqa(k, v, q.shape[-3], -3)
         else:
             b, _, dim_head = q.shape
             dim_head //= heads
-            q, k, v = map(
-                lambda t: t.view(b, -1, heads, dim_head),
-                (q, k, v),
-            )
+            q, k, v = comfy_attention._reshape_qkv_to_heads(q, k, v, b, heads, dim_head, enable_gqa)
             tensor_layout = "NHD"
 
         if mask is not None:
@@ -59,7 +65,9 @@ def _install_sage_attention_noise_guard():
                 mask = mask.unsqueeze(1)
 
         try:
-            out = comfy_attention.sageattn(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout)
+            # sm_scale / smooth_k mirror ComfyUI 0.38.x native attention_sage contract
+            out = comfy_attention.sageattn(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout,
+                                           sm_scale=kwargs.get("scale", None), smooth_k=False)
         except Exception as e:
             err = str(e)
             if "Unsupported head_dim: 160" in err:
@@ -173,23 +181,25 @@ def _install_general_vram_management():
         original_general_manage_vram = getattr(mm, "EXTRA_RESERVED_VRAM", 0)
         mm.EXTRA_RESERVED_VRAM = non_torch
 
-        # Detailed startup log
+        # Detailed startup log (ASCII-only: stdout may use a legacy codepage on
+        # Windows; non-ASCII box-drawing chars raised UnicodeEncodeError and
+        # aborted the patch before it was applied on ComfyUI 0.38.x)
         to_gb = lambda b: b / (1024 * 1024 * 1024)
-        print(f"[ComfyUI-VRAM-Manager] ── Startup VRAM Patch ──")
+        print(f"[ComfyUI-VRAM-Manager] -- Startup VRAM Patch --")
         print(f"[ComfyUI-VRAM-Manager]   GPU: {gpu_name}")
         print(f"[ComfyUI-VRAM-Manager]   VRAM Total:          {to_gb(vram_total):.2f} GB")
         print(f"[ComfyUI-VRAM-Manager]   System-wide used:    {to_gb(system_used):.2f} GB  (NVML)")
         print(f"[ComfyUI-VRAM-Manager]   PyTorch used:        {to_gb(torch_used):.2f} GB")
         print(f"[ComfyUI-VRAM-Manager]   Non-PyTorch used:    {to_gb(non_torch):.2f} GB  (browsers, other apps)")
-        print(f"[ComfyUI-VRAM-Manager]   General Manage VRAM: {to_gb(original_general_manage_vram):.2f} GB → {to_gb(non_torch):.2f} GB")
-        print(f"[ComfyUI-VRAM-Manager] ── Patch applied ──")
+        print(f"[ComfyUI-VRAM-Manager]   General Manage VRAM: {to_gb(original_general_manage_vram):.2f} GB -> {to_gb(non_torch):.2f} GB")
+        print(f"[ComfyUI-VRAM-Manager] -- Patch applied --")
     except Exception as e:
         print(f"[ComfyUI-VRAM-Manager] Startup patch error: {e}")
 
 
 _install_general_vram_management()
 
-# Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
+# Import Memory Manager nodes
 try:
     from .nodes.memory_manager import MemoryManager, any
     print("[ComfyUI-VRAM-Manager] Successfully imported MemoryManager from .nodes.memory_manager")
@@ -228,93 +238,6 @@ except ImportError as e:
         DisTorchPurgeVRAMV2 = None
 
 
-class ModelPatchMemoryCleaner:
-    """
-    Memory cleaner specifically for ModelPatcher loaded model patches.
-    Clears model patches loaded via ModelPatchLoader to prevent OOM during upscaling.
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "anything": (any, {}),
-                "clear_model_patches": ("BOOLEAN", {"default": True, "tooltip": "Clear model patches loaded via ModelPatchLoader"}),
-                "clean_gpu": ("BOOLEAN", {"default": True}),
-                "force_gc": ("BOOLEAN", {"default": True}),
-            }
-        }
-
-    RETURN_TYPES = (any,)
-    RETURN_NAMES = ("any",)
-    FUNCTION = "clear_model_patches"
-    CATEGORY = "Memory"
-
-    def clear_model_patches(self, anything, clear_model_patches, clean_gpu, force_gc):
-        try:
-            if clear_model_patches:
-                import comfy.model_management
-                import comfy.model_patcher
-                
-                # Get current loaded models
-                if hasattr(comfy.model_management, "current_loaded_models"):
-                    current_loaded_models = comfy.model_management.current_loaded_models
-                    
-                    # Find and unload model patches
-                    unloaded_count = 0
-                    for i in range(len(current_loaded_models) - 1, -1, -1):
-                        loaded_model = current_loaded_models[i]
-                        if loaded_model is not None and hasattr(loaded_model, "model"):
-                            model = loaded_model.model
-                            # Check if this is a ModelPatcher with additional_models (model patches)
-                            if isinstance(model, comfy.model_patcher.ModelPatcher):
-                                # Check for additional_models (model patches stored here)
-                                if hasattr(model, "additional_models") and model.additional_models:
-                                    # Mark as not currently used
-                                    loaded_model.currently_used = False
-                                    # Unload the model
-                                    if hasattr(loaded_model, "model_unload"):
-                                        loaded_model.model_unload()
-                                    # Remove from current_loaded_models
-                                    current_loaded_models.pop(i)
-                                    unloaded_count += 1
-                                    print(f"Unloaded model patch: {type(model.model).__name__ if hasattr(model, 'model') else 'ModelPatcher'}")
-                                # Also check attachments for model patches
-                                elif hasattr(model, "attachments") and model.attachments:
-                                    # Mark as not currently used
-                                    loaded_model.currently_used = False
-                                    # Unload the model
-                                    if hasattr(loaded_model, "model_unload"):
-                                        loaded_model.model_unload()
-                                    # Remove from current_loaded_models
-                                    current_loaded_models.pop(i)
-                                    unloaded_count += 1
-                                    print(f"Unloaded model patch from attachments: {type(model.model).__name__ if hasattr(model, 'model') else 'ModelPatcher'}")
-                    
-                    if unloaded_count > 0:
-                        print(f"Cleared {unloaded_count} model patch(es)")
-                    
-                    # Cleanup models GC
-                    if hasattr(comfy.model_management, "cleanup_models_gc"):
-                        comfy.model_management.cleanup_models_gc()
-            
-            if clean_gpu and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                print("GPU memory cleared")
-            
-            if force_gc:
-                gc.collect()
-                print("Garbage collection completed")
-            
-            print("Model patch memory cleanup completed")
-            
-        except Exception as e:
-            print(f"Model patch memory cleanup error: {e}")
-        
-        return (anything,)
-
-
 # Import SageAttention patch node
 try:
     from .nodes.sa import PatchSageAttentionDM
@@ -329,9 +252,7 @@ except ImportError as e:
 
 
 # Register nodes with ComfyUI
-NODE_CLASS_MAPPINGS = {
-    "ModelPatchMemoryCleaner": ModelPatchMemoryCleaner,
-}
+NODE_CLASS_MAPPINGS = {}
 
 # Register Memory Manager nodes if available
 if MemoryManager is not None:
@@ -356,9 +277,7 @@ else:
 
 print(f"[ComfyUI-VRAM-Manager] Total registered nodes: {list(NODE_CLASS_MAPPINGS.keys())}")
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "ModelPatchMemoryCleaner": "Model Patch Memory Cleaner",
-}
+NODE_DISPLAY_NAME_MAPPINGS = {}
 
 # Register Memory Manager node display names if available
 if MemoryManager is not None:

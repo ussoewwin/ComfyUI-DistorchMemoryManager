@@ -33,6 +33,7 @@ class DisTorchPurgeVRAMV2:
                 "anything": (any, {}),
                 "purge_cache": ("BOOLEAN", {"default": True}),
                 "purge_models": ("BOOLEAN", {"default": True}),
+                "clear_model_patches": ("BOOLEAN", {"default": True, "tooltip": "Clear model patches loaded via ModelPatchLoader"}),
                 "purge_seedvr2_models": ("BOOLEAN", {"default": False, "tooltip": "Clear SeedVR2 DiT (base) and VAE models from cache"}),
                 "purge_qwen3vl_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Qwen3-VL models from GPU memory"}),
                 "purge_nunchaku_models": ("BOOLEAN", {"default": False, "tooltip": "Clear Nunchaku models (FLUX/Z-Image/Qwen-Image) from GPU memory"}),
@@ -46,7 +47,7 @@ class DisTorchPurgeVRAMV2:
     FUNCTION = "purge_vram"
     CATEGORY = "Distorch/Memory"
 
-    def purge_vram(self, anything, purge_cache, purge_models, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models, **kwargs):
+    def purge_vram(self, anything, purge_cache, purge_models, clear_model_patches, purge_seedvr2_models, purge_qwen3vl_models, purge_nunchaku_models, **kwargs):
         # Toggle label is "HSWQ"; accept legacy "HSWQ INT8" for old workflows.
         purge_hswq_int8 = bool(kwargs.get("HSWQ", kwargs.get("HSWQ INT8", False)))
         purge_ollama = bool(kwargs.get("Ollama", False))
@@ -66,6 +67,65 @@ class DisTorchPurgeVRAMV2:
                             pass
                 finally:
                     torch.cuda.set_device(current_device)
+
+        try:
+            if clear_model_patches:
+                import comfy.model_management
+                import comfy.model_patcher
+                
+                # Get current loaded models
+                if hasattr(comfy.model_management, "current_loaded_models"):
+                    current_loaded_models = comfy.model_management.current_loaded_models
+                    
+                    # Find and unload model patches
+                    unloaded_count = 0
+                    for i in range(len(current_loaded_models) - 1, -1, -1):
+                        loaded_model = current_loaded_models[i]
+                        if loaded_model is not None and hasattr(loaded_model, "model"):
+                            model = loaded_model.model
+                            # Check if this is a ModelPatcher with additional_models (model patches)
+                            if isinstance(model, comfy.model_patcher.ModelPatcher):
+                                # Check for additional_models (model patches stored here)
+                                if hasattr(model, "additional_models") and model.additional_models:
+                                    # Mark as not currently used
+                                    loaded_model.currently_used = False
+                                    # Unload the model
+                                    if hasattr(loaded_model, "model_unload"):
+                                        loaded_model.model_unload()
+                                    # Remove from current_loaded_models
+                                    current_loaded_models.pop(i)
+                                    unloaded_count += 1
+                                    print(f"Unloaded model patch: {type(model.model).__name__ if hasattr(model, 'model') else 'ModelPatcher'}")
+                                # Also check attachments for model patches
+                                elif hasattr(model, "attachments") and model.attachments:
+                                    # Mark as not currently used
+                                    loaded_model.currently_used = False
+                                    # Unload the model
+                                    if hasattr(loaded_model, "model_unload"):
+                                        loaded_model.model_unload()
+                                    # Remove from current_loaded_models
+                                    current_loaded_models.pop(i)
+                                    unloaded_count += 1
+                                    print(f"Unloaded model patch from attachments: {type(model.model).__name__ if hasattr(model, 'model') else 'ModelPatcher'}")
+                    
+                    if unloaded_count > 0:
+                        print(f"Cleared {unloaded_count} model patch(es)")
+                    
+                    # Cleanup models GC
+                    if hasattr(comfy.model_management, "cleanup_models_gc"):
+                        comfy.model_management.cleanup_models_gc()
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    print("GPU memory cleared")
+
+                gc.collect()
+                print("Garbage collection completed")
+
+                print("Model patch memory cleanup completed")
+        except Exception as e:
+            print(f"Model patch memory cleanup error: {e}")
 
         if purge_models:
             try:
