@@ -199,7 +199,7 @@ def _install_general_vram_management():
 
 _install_general_vram_management()
 
-# Import Memory Manager nodes (including any for ModelPatchMemoryCleaner)
+# Import Memory Manager nodes
 try:
     from .nodes.memory_manager import MemoryManager, any
     print("[ComfyUI-VRAM-Manager] Successfully imported MemoryManager from .nodes.memory_manager")
@@ -236,93 +236,6 @@ except ImportError as e:
     except ImportError as e2:
         print(f"[ComfyUI-VRAM-Manager] WARNING: Failed to import DisTorchPurgeVRAMV2: {e2}")
         DisTorchPurgeVRAMV2 = None
-
-
-class ModelPatchMemoryCleaner:
-    """
-    Memory cleaner specifically for ModelPatcher loaded model patches.
-    Clears model patches loaded via ModelPatchLoader to prevent OOM during upscaling.
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "anything": (any, {}),
-                "clear_model_patches": ("BOOLEAN", {"default": True, "tooltip": "Clear model patches loaded via ModelPatchLoader"}),
-                "clean_gpu": ("BOOLEAN", {"default": True}),
-                "force_gc": ("BOOLEAN", {"default": True}),
-            }
-        }
-
-    RETURN_TYPES = (any,)
-    RETURN_NAMES = ("any",)
-    FUNCTION = "clear_model_patches"
-    CATEGORY = "Memory"
-
-    def clear_model_patches(self, anything, clear_model_patches, clean_gpu, force_gc):
-        try:
-            if clear_model_patches:
-                import comfy.model_management
-                import comfy.model_patcher
-                
-                # Get current loaded models
-                if hasattr(comfy.model_management, "current_loaded_models"):
-                    current_loaded_models = comfy.model_management.current_loaded_models
-                    
-                    # Find and unload model patches
-                    unloaded_count = 0
-                    for i in range(len(current_loaded_models) - 1, -1, -1):
-                        loaded_model = current_loaded_models[i]
-                        if loaded_model is not None and hasattr(loaded_model, "model"):
-                            model = loaded_model.model
-                            # Check if this is a ModelPatcher with additional_models (model patches)
-                            if isinstance(model, comfy.model_patcher.ModelPatcher):
-                                # Check for additional_models (model patches stored here)
-                                if hasattr(model, "additional_models") and model.additional_models:
-                                    # Mark as not currently used
-                                    loaded_model.currently_used = False
-                                    # Unload the model
-                                    if hasattr(loaded_model, "model_unload"):
-                                        loaded_model.model_unload()
-                                    # Remove from current_loaded_models
-                                    current_loaded_models.pop(i)
-                                    unloaded_count += 1
-                                    print(f"Unloaded model patch: {type(model.model).__name__ if hasattr(model, 'model') else 'ModelPatcher'}")
-                                # Also check attachments for model patches
-                                elif hasattr(model, "attachments") and model.attachments:
-                                    # Mark as not currently used
-                                    loaded_model.currently_used = False
-                                    # Unload the model
-                                    if hasattr(loaded_model, "model_unload"):
-                                        loaded_model.model_unload()
-                                    # Remove from current_loaded_models
-                                    current_loaded_models.pop(i)
-                                    unloaded_count += 1
-                                    print(f"Unloaded model patch from attachments: {type(model.model).__name__ if hasattr(model, 'model') else 'ModelPatcher'}")
-                    
-                    if unloaded_count > 0:
-                        print(f"Cleared {unloaded_count} model patch(es)")
-                    
-                    # Cleanup models GC
-                    if hasattr(comfy.model_management, "cleanup_models_gc"):
-                        comfy.model_management.cleanup_models_gc()
-            
-            if clean_gpu and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                print("GPU memory cleared")
-            
-            if force_gc:
-                gc.collect()
-                print("Garbage collection completed")
-            
-            print("Model patch memory cleanup completed")
-            
-        except Exception as e:
-            print(f"Model patch memory cleanup error: {e}")
-        
-        return (anything,)
 
 
 # Import SageAttention patch node
