@@ -38,18 +38,24 @@ def _install_sage_attention_noise_guard():
     def attention_sage_guarded(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
         if kwargs.get("low_precision_attention", True) is False:
             return comfy_attention.attention_pytorch(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
+        # ComfyUI 0.38.x: native sage path refuses mask when the installed
+        # sageattention package cannot consume attn_mask (SAGE_ATTENTION_SUPPORTS_MASK).
+        # The old guard ignored this and silently dropped masking -> quality bug.
+        sage_supports_mask = getattr(comfy_attention, "SAGE_ATTENTION_SUPPORTS_MASK", True)
+        if mask is not None and not sage_supports_mask:
+            return comfy_attention.attention_pytorch(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
 
         exception_fallback = False
+        enable_gqa = kwargs.get("enable_gqa", False)
         if skip_reshape:
             b, _, _, dim_head = q.shape
             tensor_layout = "HND"
+            if enable_gqa:
+                k, v = comfy.ops.repeat_kv_for_gqa(k, v, q.shape[-3], -3)
         else:
             b, _, dim_head = q.shape
             dim_head //= heads
-            q, k, v = map(
-                lambda t: t.view(b, -1, heads, dim_head),
-                (q, k, v),
-            )
+            q, k, v = comfy_attention._reshape_qkv_to_heads(q, k, v, b, heads, dim_head, enable_gqa)
             tensor_layout = "NHD"
 
         if mask is not None:
@@ -59,7 +65,9 @@ def _install_sage_attention_noise_guard():
                 mask = mask.unsqueeze(1)
 
         try:
-            out = comfy_attention.sageattn(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout)
+            # sm_scale / smooth_k mirror ComfyUI 0.38.x native attention_sage contract
+            out = comfy_attention.sageattn(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout,
+                                           sm_scale=kwargs.get("scale", None), smooth_k=False)
         except Exception as e:
             err = str(e)
             if "Unsupported head_dim: 160" in err:
@@ -173,16 +181,18 @@ def _install_general_vram_management():
         original_general_manage_vram = getattr(mm, "EXTRA_RESERVED_VRAM", 0)
         mm.EXTRA_RESERVED_VRAM = non_torch
 
-        # Detailed startup log
+        # Detailed startup log (ASCII-only: stdout may use a legacy codepage on
+        # Windows; non-ASCII box-drawing chars raised UnicodeEncodeError and
+        # aborted the patch before it was applied on ComfyUI 0.38.x)
         to_gb = lambda b: b / (1024 * 1024 * 1024)
-        print(f"[ComfyUI-VRAM-Manager] ── Startup VRAM Patch ──")
+        print(f"[ComfyUI-VRAM-Manager] -- Startup VRAM Patch --")
         print(f"[ComfyUI-VRAM-Manager]   GPU: {gpu_name}")
         print(f"[ComfyUI-VRAM-Manager]   VRAM Total:          {to_gb(vram_total):.2f} GB")
         print(f"[ComfyUI-VRAM-Manager]   System-wide used:    {to_gb(system_used):.2f} GB  (NVML)")
         print(f"[ComfyUI-VRAM-Manager]   PyTorch used:        {to_gb(torch_used):.2f} GB")
         print(f"[ComfyUI-VRAM-Manager]   Non-PyTorch used:    {to_gb(non_torch):.2f} GB  (browsers, other apps)")
-        print(f"[ComfyUI-VRAM-Manager]   General Manage VRAM: {to_gb(original_general_manage_vram):.2f} GB → {to_gb(non_torch):.2f} GB")
-        print(f"[ComfyUI-VRAM-Manager] ── Patch applied ──")
+        print(f"[ComfyUI-VRAM-Manager]   General Manage VRAM: {to_gb(original_general_manage_vram):.2f} GB -> {to_gb(non_torch):.2f} GB")
+        print(f"[ComfyUI-VRAM-Manager] -- Patch applied --")
     except Exception as e:
         print(f"[ComfyUI-VRAM-Manager] Startup patch error: {e}")
 

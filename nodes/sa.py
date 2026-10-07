@@ -20,6 +20,17 @@ _logged_sage_fallback_messages = set()
 _logged_sparge_fallback_messages = set()
 
 
+def _gqa_expand_kv(k, v, query_heads, head_dim):
+    """Expand k/v heads to match query heads for GQA (ComfyUI 0.38.x models pass
+    enable_gqa=True; SageAttention / SpargeAttn kernels require equal head counts).
+    Layout-agnostic: pass dim=-2 for NHD [b, s, h, d], dim=-3 for HND [b, h, s, d]."""
+    n_rep = query_heads // k.shape[head_dim]
+    if n_rep > 1:
+        k = k.repeat_interleave(n_rep, dim=head_dim)
+        v = v.repeat_interleave(n_rep, dim=head_dim)
+    return k, v
+
+
 # Flash-Attention version detection (independent from model_management)
 def get_flash_attention_info():
     """
@@ -185,25 +196,28 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
             logging.info("Patching comfy attention to use sageattn")
     
     from sageattention import sageattn
+    # ComfyUI 0.38.x native attention_sage contract: sm_scale forwarded from the
+    # model kwargs (None = kernel-internal default) and smooth_k disabled
+    # (k-smoothing is hostile to quantized / DistTorch weights).
     if sage_attention == "auto":
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
-            return sageattn(q, k, v, is_causal=is_causal, attn_mask=attn_mask, tensor_layout=tensor_layout)
+        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+            return sageattn(q, k, v, is_causal=is_causal, attn_mask=attn_mask, tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
     elif sage_attention == "sageattn_qk_int8_pv_fp16_cuda":
         from sageattention import sageattn_qk_int8_pv_fp16_cuda
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
-            return sageattn_qk_int8_pv_fp16_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32", tensor_layout=tensor_layout)
+        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+            return sageattn_qk_int8_pv_fp16_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32", tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
     elif sage_attention == "sageattn_qk_int8_pv_fp16_triton":
         from sageattention import sageattn_qk_int8_pv_fp16_triton
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
-            return sageattn_qk_int8_pv_fp16_triton(q, k, v, is_causal=is_causal, attn_mask=attn_mask, tensor_layout=tensor_layout)
+        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+            return sageattn_qk_int8_pv_fp16_triton(q, k, v, is_causal=is_causal, attn_mask=attn_mask, tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
     elif sage_attention == "sageattn_qk_int8_pv_fp8_cuda":
         from sageattention import sageattn_qk_int8_pv_fp8_cuda
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
-            return sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32+fp32", tensor_layout=tensor_layout)
+        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+            return sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32+fp32", tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
     elif sage_attention == "sageattn_qk_int8_pv_fp8_cuda++":
         from sageattention import sageattn_qk_int8_pv_fp8_cuda
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
-            return sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32+fp16", tensor_layout=tensor_layout)
+        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+            return sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32+fp16", tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
     elif "sageattn3" in sage_attention:
         # SA3-specific version detection and logging
         sage3_version, sa3_available, supports_blackwell = get_sage_attention3_info()
@@ -215,20 +229,25 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
         from sageattn3 import sageattn3_blackwell
         from torch.nn.functional import scaled_dot_product_attention as sdpa
         
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", **kwargs):
-            # Convert NHD -> HND layout (SA3 expects HND: [batch, heads, seq_len, dim])
+        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False, **kwargs):
+            # Convert NHD -> HND layout (SA3 expects HND: [batch, heads, seq_len, dim]).
+            # The kernel requires contiguous HND tensors (mirrors native attention3_sage).
             if tensor_layout == "NHD":
-                q_s, k_s, v_s = [x.transpose(1, 2) for x in (q, k, v)]
+                q_s, k_s, v_s = [x.transpose(1, 2).contiguous() for x in (q, k, v)]
             else:
-                q_s, k_s, v_s = q, k, v
+                q_s, k_s, v_s = [x.contiguous() for x in (q, k, v)]
             
-            # SA3 constraints check - fallback to SDPA if needed
+            # SA3 constraints check - fallback to SDPA if needed (mirrors native
+            # attention3_sage gates in ComfyUI 0.38.x)
             # 1. SA3 does not support attention mask
             # 2. SA3 does not support headdim >= 256
+            # 3. SA3 native gate: seq_len <= 1024 falls back to SDPA
             use_fallback = False
             if attn_mask is not None:
                 use_fallback = True
             if q_s.size(-1) >= 256:
+                use_fallback = True
+            if q_s.size(-2) <= 1024:
                 use_fallback = True
             
             if use_fallback:
@@ -330,16 +349,28 @@ def get_sparge_func_dm(sparge_topk=0.5):
         in_dtype = v.dtype
         if q.dtype == torch.float32 or k.dtype == torch.float32 or v.dtype == torch.float32:
             q, k, v = q.to(torch.float16), k.to(torch.float16), v.to(torch.float16)
+        enable_gqa = kwargs.get("enable_gqa", False)
         if skip_reshape:
             b, _, _, dim_head = q.shape
             tensor_layout = "HND"
+            if enable_gqa:
+                # ComfyUI 0.38.x GQA: k/v have fewer heads than q; expand to match
+                k, v = _gqa_expand_kv(k, v, q.shape[-3], -3)
         else:
             b, _, dim_head = q.shape
             dim_head //= heads
-            q, k, v = map(
-                lambda t: t.view(b, -1, heads, dim_head),
-                (q, k, v),
-            )
+            if enable_gqa:
+                key_heads = k.shape[-1] // dim_head
+                value_heads = v.shape[-1] // dim_head
+                q = q.view(b, -1, heads, dim_head)
+                k = k.view(b, -1, key_heads, dim_head)
+                v = v.view(b, -1, value_heads, dim_head)
+                k, v = _gqa_expand_kv(k, v, heads, -2)
+            else:
+                q, k, v = map(
+                    lambda t: t.view(b, -1, heads, dim_head),
+                    (q, k, v),
+                )
             tensor_layout = "NHD"
 
         if mask is not None:
@@ -401,16 +432,28 @@ def _build_sage_attention_tail(sage_func, allow_compile):
         in_dtype = v.dtype
         if q.dtype == torch.float32 or k.dtype == torch.float32 or v.dtype == torch.float32:
             q, k, v = q.to(torch.float16), k.to(torch.float16), v.to(torch.float16)
+        enable_gqa = kwargs.get("enable_gqa", False)
         if skip_reshape:
             b, _, _, dim_head = q.shape
             tensor_layout="HND"
+            if enable_gqa:
+                # ComfyUI 0.38.x GQA: k/v have fewer heads than q; expand to match
+                k, v = _gqa_expand_kv(k, v, q.shape[-3], -3)
         else:
             b, _, dim_head = q.shape
             dim_head //= heads
-            q, k, v = map(
-                lambda t: t.view(b, -1, heads, dim_head),
-                (q, k, v),
-            )
+            if enable_gqa:
+                key_heads = k.shape[-1] // dim_head
+                value_heads = v.shape[-1] // dim_head
+                q = q.view(b, -1, heads, dim_head)
+                k = k.view(b, -1, key_heads, dim_head)
+                v = v.view(b, -1, value_heads, dim_head)
+                k, v = _gqa_expand_kv(k, v, heads, -2)
+            else:
+                q, k, v = map(
+                    lambda t: t.view(b, -1, heads, dim_head),
+                    (q, k, v),
+                )
             tensor_layout="NHD"
 
         if mask is not None:
@@ -422,7 +465,9 @@ def _build_sage_attention_tail(sage_func, allow_compile):
                 mask = mask.unsqueeze(1)
         use_pytorch_fallback = False
         try:
-            out = sage_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout).to(in_dtype)
+            # sm_scale / smooth_k mirror ComfyUI 0.38.x native attention_sage contract
+            out = sage_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout,
+                            sm_scale=kwargs.get("scale", None), smooth_k=False).to(in_dtype)
         except Exception as e:
             # Keep this suppression narrowly scoped so only the known SD1.5-style
             # unsupported head_dim=160 error is silenced.
