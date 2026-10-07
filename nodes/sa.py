@@ -270,9 +270,14 @@ def get_sparge_func_dm(sparge_topk=0.5):
     Build the SpargeAttn-hswq attention function (completely separate from the
     SageAttention path above).
 
-    Uses spas_sage_hswq_attn.spas_sage2_attn_meansim_topk_cuda (the fork's
-    recommended plug-and-play API, based on SageAttention2++ quantized
-    kernels with two-stage block-sparse filtering).
+    Entry-point resolution (mirrors the SeedVR2-TRT integration, fork >= 1.1):
+    - NHD inputs (skip_reshape=False) go through
+      spas_sage2_attn_meansim_topk_nhd_cuda, the zero-copy packed-NHD entry
+      (no HND transpose copies for q/k/v).
+    - HND inputs (skip_reshape=True) and forks without the NHD entry use the
+      HND entry spas_sage2_attn_meansim_topk_cuda, as before.
+    Both entries accept the model-supplied softmax scale (ComfyUI 0.38.x
+    contract: kwargs["scale"], None = kernel-internal 1/sqrt(d) default).
 
     Constraints (handled by explicit fallback to PyTorch SDPA, never silent
     quality loss without a log line):
@@ -295,14 +300,32 @@ def get_sparge_func_dm(sparge_topk=0.5):
         logging.info(f"SpargeAttn: invalid sparge_topk={sparge_topk!r} (kernel requires (0, 1]); using default 0.5")
         _k = 0.5
     sparge_topk = _k
+    # Resolve fork entry points once at patch time (never per attention call).
+    nhd_entry = None
+    hnd_entry = None
     if sparge_available:
-        logging.info(f"Patching comfy attention to use SpargeAttn-hswq {sparge_version or 'unknown'} (spas_sage_hswq_attn, topk={sparge_topk})")
+        try:
+            import spas_sage_hswq_attn as _spas_mod
+            hnd_entry = getattr(_spas_mod, "spas_sage2_attn_meansim_topk_cuda", None)
+            nhd_entry = getattr(_spas_mod, "spas_sage2_attn_meansim_topk_nhd_cuda", None)
+        except Exception:
+            hnd_entry = None
+            nhd_entry = None
+        if hnd_entry is None:
+            # Importable but entry points missing: every call takes the
+            # explicit SDPA fallback below instead of a raw AttributeError.
+            logging.warning("spas_sage_hswq_attn is missing its entry points; SpargeAttn mode will use pytorch attention fallback for every call.")
+            sparge_available = False
+
+    if sparge_available:
+        _entry_note = "zero-copy NHD entry (fork >= 1.1)" if nhd_entry is not None else "HND entry"
+        logging.info(f"Patching comfy attention to use SpargeAttn-hswq {sparge_version or 'unknown'} (spas_sage_hswq_attn, {_entry_note}, topk={sparge_topk})")
     else:
         logging.warning("spas_sage_hswq_attn not installed; SpargeAttn mode will use pytorch attention fallback for every call.")
 
     from torch.nn.functional import scaled_dot_product_attention as sdpa
 
-    def sparge_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD"):
+    def sparge_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", scale=None):
         # Explicit constraint checks -> SDPA fallback (SpargeAttn kernels do not
         # consume attn_mask, and only headdim 64/128 with seq_len>=128 work).
         headdim = q.size(-1)
@@ -316,36 +339,59 @@ def get_sparge_func_dm(sparge_topk=0.5):
             use_fallback = True
 
         if use_fallback:
+            # SDPA requires HND (b, h, s, d); route both layouts through the
+            # same transpose -> sdpa -> transpose-back flow. (v2.4.7 passed NHD
+            # tensors to sdpa directly, which always raised inside this
+            # fallback and relied on the outer exception catch.)
             if tensor_layout == "NHD":
-                out = sdpa(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
-            else:
                 q_s, k_s, v_s = [x.transpose(1, 2) for x in (q, k, v)]
-                out = sdpa(q_s, k_s, v_s, attn_mask=attn_mask, is_causal=is_causal)
-                out = out.transpose(1, 2)
-            return out
+            else:
+                q_s, k_s, v_s = q, k, v
+            out = sdpa(q_s, k_s, v_s, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
+            return out.transpose(1, 2) if tensor_layout == "NHD" else out
 
         if not sparge_available:
             raise RuntimeError("spas_sage_hswq_attn is not installed")
 
-        from spas_sage_hswq_attn import spas_sage2_attn_meansim_topk_cuda
+        _topk = float(sparge_topk)
 
-        # API expects HND layout.
+        # fork >= 1.1 zero-copy NHD path (returns HND; the transpose back to
+        # the caller's NHD layout is a free view). Guards mirror the entry's
+        # own asserts (half dtype, last-dim contiguity) so we never trip them
+        # at kernel runtime.
+        if (nhd_entry is not None and tensor_layout == "NHD"
+                and q.dtype in (torch.float16, torch.bfloat16)
+                and q.stride(-1) == 1 and k.stride(-1) == 1 and v.stride(-1) == 1):
+            return nhd_entry(q, k, v, is_causal=is_causal, scale=scale, topk=_topk).transpose(1, 2)
+
+        # HND entry (skip_reshape inputs, older forks, or non-contiguous NHD).
         if tensor_layout == "NHD":
             q_s, k_s, v_s = [x.transpose(1, 2) for x in (q, k, v)]
         else:
             q_s, k_s, v_s = q, k, v
-        out = spas_sage2_attn_meansim_topk_cuda(
+        return hnd_entry(
             q_s, k_s, v_s,
-            topk=float(sparge_topk),
+            topk=_topk,
             is_causal=is_causal,
+            scale=scale,
             tensor_layout="HND",
         )
-        return out.transpose(1, 2) if tensor_layout == "NHD" else out
 
     sparge_func = torch.compiler.disable()(sparge_func)
 
     @wrap_attn
     def attention_sparge(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
+        # ComfyUI 0.38.x contract (mirrors native attention_sage): honor the
+        # model's low_precision_attention=False opt-out via attention_pytorch.
+        if kwargs.get("low_precision_attention", True) is False:
+            return comfy_attention.attention_pytorch(
+                q, k, v, heads,
+                mask=mask,
+                attn_precision=attn_precision,
+                skip_reshape=skip_reshape,
+                skip_output_reshape=skip_output_reshape,
+                **kwargs
+            )
         in_dtype = v.dtype
         if q.dtype == torch.float32 or k.dtype == torch.float32 or v.dtype == torch.float32:
             q, k, v = q.to(torch.float16), k.to(torch.float16), v.to(torch.float16)
@@ -380,7 +426,10 @@ def get_sparge_func_dm(sparge_topk=0.5):
                 mask = mask.unsqueeze(1)
         use_pytorch_fallback = False
         try:
-            out = sparge_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout).to(in_dtype)
+            # scale mirrors the ComfyUI 0.38.x native attention_sage contract
+            # (kwargs["scale"], None = kernel-internal default).
+            out = sparge_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout,
+                              scale=kwargs.get("scale", None)).to(in_dtype)
         except Exception as e:
             err = str(e)
             if "not installed" in err:
