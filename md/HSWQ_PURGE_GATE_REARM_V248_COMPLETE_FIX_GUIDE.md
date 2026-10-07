@@ -153,7 +153,7 @@ comfy.ops / comfy.model_detection / comfy.utils / comfy.model_patcher and
 resets each family's gate boolean when its layer is ABSENT, so the next load
 path re-applies via the legitimate install code.
 
-Branch separation (Owner philosophy 分離・分岐、絶対混ぜるな): ZI /
+Branch separation (Owner philosophy separate, branch, never mix): ZI /
 SDXL-product-NVFP4 / Krea2 / INT8 / bake / parity each have an INDEPENDENT
 predicate and reset its OWN global. A peeled ZI layer never resets the SDXL
 gate, and vice versa.
@@ -530,7 +530,7 @@ except Exception:
 
 ---
 
-## 5. Design rules honored (Owner philosophy: 分離・分岐・絶対に混ぜない)
+## 5. Design rules honored (Owner philosophy: separate, branch, never mix)
 
 1. **Branch separation.** One independent predicate per family (ZI / SDXL product /
    Krea2 / INT8 / parity / bake), each resets **only its own global**. Identifying
