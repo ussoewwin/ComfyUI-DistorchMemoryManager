@@ -47,94 +47,66 @@
 
 ### 三类节点
 
-#### General Purge VRAM V2（v1.10，v1.2.0 / v2.0.0 / v2.2.0 / v2.4.1 / v2.4.2 / v2.4.3 / v2.4.8 增强）
+#### General Purge VRAM V2
 
 <p align="center">
   <img src="../png/pvram2.png" width="400">
 </p>
 
-* **说明**：Distorch 套件节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`），增强模型卸载、ModelPatchLoader 模型补丁清理、SeedVR2 / Qwen3-VL / Nunchaku 清理；v2.4.1 新增 **`HSWQ`** 开关；v2.4.2 在 **`HSWQ`** 下方新增 **`Ollama`** 开关，用于零残留清理 Ollama 服务端显存；v2.4.3 在 HSWQ Method **2c** 中额外清空 HSWQ **NVFP4** 运行时池 / CUDA graphs，避免 purge 后第二次 ConvRot NVFP4 生成出现 `quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`
-* **功能**：沿用 LayerStyle 原版 UI/行为谱系；类 id `DisTorchPurgeVRAMV2` 保留旧工作流兼容。v1.2.0 增强更激进的模型卸载与错误处理。v2.0.0 增加 Qwen3-VL 与 Nunchaku 清理。v2.2.0 增加 Nunchaku SDXL。v2.4.1 增加专用 **`HSWQ`** 清理流水线（PinCache 排空、PromptExecutor/SEGS 就地清空、HostUnregister、`comfy_kitchen` CUDA workspace 重置）。v2.4.2 增加 **`Ollama`** 清理，覆盖 **comfyui-ollama** 与 **comfyui-ollama-describer**（含 describer 默认 `keep_model_alive=-1`）。v2.4.3 在 kitchen 重置之外，通过 `sys.modules` 扫描 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`；优先从 `nodes/purge_vram.py` 导入；日志前缀 `HSWQ INT8/NVFP4:`。v2.4.8 全面将独立的 **Model Patch Memory Cleaner** 功能完全合流入 `clear_model_patches` 开关，补齐即时 CUDA 缓存刷新、GPU 同步与垃圾回收。支持模型补丁、SeedVR2 DiT/VAE、Qwen3-VL、Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）、HSWQ（含 NVFP4）及 Ollama 服务端卸载。
-* **输入**：任意类型 (ANY) 透传
+* **说明**：Distorch 套件核心节点 **General Purge VRAM V2**（原 LayerStyle `LayerUtility: Purge VRAM V2`；类 id `DisTorchPurgeVRAMV2`）。专用于强力清理标准 ComfyUI 垃圾回收机制无法触及的 GPU/CPU 残留显存与深层底层缓存。全面覆盖标准 ComfyUI 模型、ModelPatchLoader 模型补丁、SeedVR2、Qwen3-VL、Nunchaku（FLUX / Z-Image / Qwen-Image / SDXL）、完整 HSWQ 运行时链路（含 INT8 及 NVFP4 运行时池/CUDA 图）以及外部 Ollama 服务端进程。
+* **功能**：
+  * 通过类 id `DisTorchPurgeVRAMV2` 完整保持对 LayerStyle 原版旧工作流的向下兼容性。
+  * 强力激进的模型卸载流水线，具备完备的异常处理、可调用校验与脱钩/None `real_model` 安全处理。
+  * 将模型补丁深度清理无缝集成于 `clear_model_patches` 开关下，配备即时 CUDA 缓存刷新、GPU 同步与 GC 回收。
+  * 针对专有第三方架构（SeedVR2、Qwen3-VL、Nunchaku、HSWQ、Ollama）的深层内存排空。
+* **输入**：任意类型 (`ANY`) 透传
+* **输出**：任意类型 (`ANY`) 透传
 * **选项**：
-   * `purge_cache`：执行 `gc.collect()`、刷新 CUDA 缓存、调用 `torch.cuda.ipc_collect()`
-   * `purge_models`：增强模型卸载（v1.2.0）：
-     * 调用 `cleanup_models()` 移除无效模型
-     * 调用 `cleanup_models_gc()` 进行垃圾回收
-     * 将所有模型标记为未使用
-     * 通过 `model_unload()` 积极卸载
-     * 若可用则调用 `soft_empty_cache()`
-   * `clear_model_patches`：清理 ModelPatchLoader 加载的模型补丁（默认：True；完全继承并统一原独立 Model Patch Memory Cleaner 功能）
-     * 清理通过 ModelPatchLoader 加载的模型补丁（如 Z-Image ControlNet、QwenImage BlockWise ControlNet、SigLIP MultiFeat Proj），防止放大时 OOM
-     * 检测带有 `additional_models` 或 `attachments` 中含模型补丁的 ModelPatcher 实例
-     * 通过 `model_unload()` 安全地从 VRAM 卸载模型补丁，并从 `current_loaded_models` 移除
-     * 执行 `cleanup_models_gc()`，并在卸载后立即执行 `torch.cuda.empty_cache()`、`torch.cuda.synchronize()` 与 `gc.collect()`，即便关闭 `purge_models` 也能即时物理解放显存
-   * `purge_seedvr2_models`：从缓存清理 SeedVR2 DiT 与 VAE
-     * 清理 SeedVR2 GlobalModelCache 中所有缓存的 DiT
-     * 清理所有缓存的 VAE
-     * 清理 runner 模板
-     * 使用 SeedVR2 的 `release_model_memory()` 正确释放
-   * `purge_qwen3vl_models`：从 GPU 清理 Qwen3-VL（v2.0.0）
-     * 在 sys.modules 与 gc.get_objects() 中搜索 Qwen3-VL
-     * 处理 device_map="auto" 的多设备模型
-     * 清理参数、缓冲区与内部状态
-   * `purge_nunchaku_models`：清理 Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）（v2.0.0，v2.2.0 增强）
-     * 支持 NunchakuFluxTransformer2dModel、NunchakuZImageTransformer2DModel、NunchakuQwenImageTransformer2DModel、NunchakuSDXLUNet2DConditionModel（v2.2.0）
-     * 清理前禁用 CPU offload
-     * 在 sys.modules、ComfyUI current_loaded_models、gc.get_objects() 中搜索
-     * 清理 cache 与临时数据属性（v2.2.0）
-     * 处理带 diffusion_model 的 NunchakuSDXL 包装类（v2.2.0）
-   * `HSWQ`：清理 HSWQ 残留 GPU（及相关主机）内存 — 面向完整 HSWQ 路径，非仅 INT8（v2.4.1；NVFP4 Method **2c** 见 v2.4.3）
-     * 强制导入并排空 HSWQ PinCache；就地清空 PromptExecutor / SEGS 缓存（不在 prompt 中途调用 `reset()`）
-     * 适用时通过 HostUnregister 释放 PINNED_MEMORY
-     * 核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存（Method **2c**），使 purge+reload（含 INT8 GEMM）仍可用
-     * （v2.4.3）kitchen 重置后，扫描 `sys.modules` 中的 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`，清空 HSWQ **NVFP4** 运行时池 / CUDA graphs
-     * UI 标签为 **`HSWQ`**；仍接受旧工作流 kwargs `"HSWQ INT8"`；日志前缀 `HSWQ INT8/NVFP4:`
-   * `Ollama`：清理 **comfyui-ollama** 与 **comfyui-ollama-describer** 加载的 Ollama 服务端显存（v2.4.2）
-     * 节点 UI 中位于 **`HSWQ`** 正下方（见上方截图）
-     * 针对 describer 默认 `keep_model_alive=-1`（模型常驻直至显式卸载）
-     * 从两个自定义节点包收集 `api_host` / `url`；循环 `GET /api/ps` 直至为空
-     * 发送 `/api/generate` 与 `/api/chat` 且 `keep_alive=0`；执行 `ollama stop`；可用时走 Client API 回退
-     * 清空进程内 `CHAT_SESSIONS` / `saved_context`；删除 `saved_context/` 文件；最终 `/api/ps` 验证
-* **v1.2.0 增强**：
-  * 更激进的模型卸载与完善错误处理
-  * 对所有方法调用进行 None 与 callable 检查
-  * 改进错误信息与日志
-  * 安全处理 real_model 为 None 的模型
-  * 支持清理 SeedVR2 DiT/VAE
-* **v2.0.0 增强**：
-  * Qwen3-VL 清理，支持 device_map="auto"
-  * Nunchaku 清理（FLUX/Z-Image/Qwen-Image），含 CPU offload 处理
-  * 增强多设备 CUDA 缓存清理
-  * 完善的调试日志
-  * 修复 any() 与 AnyType 名称冲突
-  * 显示名称改为 ComfyUI-VRAM-Manager
-* **v2.2.0 增强**：
-  * Nunchaku SDXL（NunchakuSDXLUNet2DConditionModel）
-  * NunchakuSDXL 包装类检测与处理
-  * 所有 Nunchaku 检测路径的 cache 与临时数据清理
-  * 更积极的垃圾回收（3 次 gc.collect()）与 CUDA 缓存清理
-  * 改进 Nunchaku SDXL VRAM 释放（约 2.5GB）
-  * 在清理顶层参数的同时保留模型结构
-* **v2.4.1 增强**：
-  * 专用 **`HSWQ`** 开关，完整清理 HSWQ 显存
-  * PinCache 强制导入/排空、PromptExecutor/SEGS 就地清空、HostUnregister
-  * Method **2c**：核清理后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存
-  * fallback `nodes/purge_vram.py` 与根目录节点同步
-* **v2.4.2 增强**：
-  * DisTorchPurgeVRAMV2 新增 **`Ollama`** 开关（位于 **`HSWQ`** 下方）
-  * 零残留清理 **comfyui-ollama** 与 **comfyui-ollama-describer** 的 Ollama 显存
-  * `/api/ps` 循环至空、`keep_alive=0` 的 generate/chat、`ollama stop`、Client 回退
-  * 清空 `CHAT_SESSIONS`、`saved_context` 及磁盘 `saved_context/` 文件
-  * fallback `nodes/purge_vram.py` 与根目录节点同步
-* **v2.4.3 增强**：
-  * HSWQ Method **2c** 在 kitchen 重置之外，通过 `sys.modules` 扫描 + `clear_nvfp4_runtime_pools()` 清空 HSWQ **NVFP4** 运行时池 / CUDA graphs
-  * 避免 purge 后第二次 ConvRot NVFP4 生成失败（`quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`）
-  * 优先从 `nodes/purge_vram.py` 导入 `DisTorchPurgeVRAMV2`；日志前缀 `HSWQ INT8/NVFP4:`
-* **v2.4.8 增强**：
-  * 将独立的 **Model Patch Memory Cleaner** 完整合并进 `DisTorchPurgeVRAMV2` 的 `clear_model_patches` 选项中
-  * 在 `clear_model_patches` 内增加了即时 CUDA 缓存刷新（`torch.cuda.empty_cache()`）、GPU 同步及 GC，即便 `purge_models=False` 也可即时物理解放显存
-* **原因**：上游 LayerStyle 节点消失，在此复刻以保留旧工作流。v1.2.0 改进内存管理。SeedVR2 支持独立缓存系统。v2.0.0 支持 ComfyUI 标准 model_management 未管理的 Qwen3-VL/Nunchaku。v2.2.0 支持需特殊处理的 Nunchaku SDXL。v2.4.1 针对通用 unload / DistTorch 普通 purge 无法完全回收的 HSWQ 残留。v2.4.2 针对 comfyui-ollama / comfyui-ollama-describer（尤其 `keep_model_alive=-1`）加载的 Ollama 模型无法被标准 ComfyUI 或 HSWQ 清理单独释放的问题。v2.4.3 针对仅 kitchen Method **2c** 无法清掉的 HSWQ **NVFP4** 运行时池 / CUDA graphs，purge 后下一次 ConvRot NVFP4 生成会失败的问题。v2.4.8 精简节点列表，将补丁清理合并至 General Purge VRAM V2，避免放置多个冗余清理节点。
+  * `purge_cache`：执行 `gc.collect()`、刷新所有可用设备的 CUDA 缓存（`torch.cuda.empty_cache()`）、调用 `torch.cuda.ipc_collect()`。
+  * `purge_models`：深度模型卸载流水线：
+    * 调用 `cleanup_models()` 移除无效残留模型
+    * 调用 `cleanup_models_gc()` 进行底层垃圾回收
+    * 将所有活跃模型标记为未使用
+    * 通过 `model_unload()` 强力卸载显存中的模型
+    * 若 ComfyUI 运行环境中可用则调用 `soft_empty_cache()`
+    * 包含健全的异常处理、`None` 检查与 `callable()` 校验（安全处理 `real_model` 为 `None` 的异常模型引用）
+  * `clear_model_patches`：清理 ModelPatchLoader 加载的模型补丁（默认：`True`；完全继承并统一原独立 Model Patch Memory Cleaner 功能）：
+    * 清理通过 ModelPatchLoader 加载的模型补丁（如 Z-Image ControlNet、QwenImage BlockWise ControlNet、SigLIP MultiFeat Proj），防止后续放大等重任务时显存溢出 OOM
+    * 检测带有 `additional_models` 或 `attachments` 中含模型补丁的 `ModelPatcher` 实例
+    * 通过 `model_unload()` 安全地从 VRAM 卸载模型补丁，并从 `current_loaded_models` 彻底移除
+    * 执行 `cleanup_models_gc()`，并在卸载后立即执行 `torch.cuda.empty_cache()`、`torch.cuda.synchronize()` 与 `gc.collect()`，即便关闭 `purge_models` 也能即时物理解放显存
+  * `purge_seedvr2_models`：从缓存清理 SeedVR2 DiT 与 VAE 模型：
+    * 排空 SeedVR2 `GlobalModelCache` 中所有缓存的 DiT 模型
+    * 排空 SeedVR2 `GlobalModelCache` 中所有缓存的 VAE 模型
+    * 清理 runner 运行模板
+    * 调用 SeedVR2 原生 API `release_model_memory()` 正确释放显存
+  * `purge_qwen3vl_models`：从 GPU 显存深度清理 Qwen3-VL 模型：
+    * 在 `sys.modules` 与 `gc.get_objects()` 中深度扫描活跃的 Qwen3-VL 实例
+    * 完整支持多设备配置（`device_map="auto"`）
+    * 释放模型参数、缓冲区与内部执行状态
+  * `purge_nunchaku_models`：清理 Nunchaku 模型架构（FLUX / Z-Image / Qwen-Image / SDXL）：
+    * 支持 `NunchakuFluxTransformer2dModel`、`NunchakuZImageTransformer2DModel`、`NunchakuQwenImageTransformer2DModel` 与 `NunchakuSDXLUNet2DConditionModel`
+    * 清理前自动禁用 CPU offload 以防同步阻塞
+    * 跨 `sys.modules`、ComfyUI `current_loaded_models` 与 `gc.get_objects()` 进行多层级检索
+    * 彻底清理内部 cache 与临时数据属性
+    * 针对带 `diffusion_model` 的 `NunchakuSDXL` 包装类进行穿透解包，在保留模型外层结构的同时释放顶层参数（可回收约 2.5GB 显存）
+    * 执行强力垃圾回收（3 次 `gc.collect()`）与全设备 CUDA 缓存刷新
+  * `HSWQ`：深度清理 HSWQ 残留 GPU、工作区及主机锁定内存（覆盖完整 HSWQ 路径，包含 INT8 及 NVFP4）：
+    * 强制导入并排空 HSWQ `PinCache`；就地清空 `PromptExecutor` / `SEGS` 缓存（不在生成中途调用 `reset()` 打断任务）
+    * 适用时通过 `HostUnregister` 彻底释放主机锁定内存 `PINNED_MEMORY`
+    * 核心清理完成后重置 `comfy_kitchen` CUDA workspace / empty-tensor 缓存（Method **2c**），确保后续重新加载（含 INT8 GEMM）功能完好
+    * 扫描 `sys.modules` 中的 `nvfp4_runtime` 并调用 `clear_nvfp4_runtime_pools()`（Method **2c**），彻底清空 HSWQ **NVFP4** 运行时池与 CUDA 图，杜绝后续第二次 ConvRot NVFP4 生成崩溃（`quantize_nvfp4` / `PyCapsule` / `pooled TC path failed`）
+    * UI 标签显示为 **`HSWQ`**；向下兼容旧工作流参数 `"HSWQ INT8"`；日志前缀统一为 `HSWQ INT8/NVFP4:`
+  * `Ollama`：清理由 **comfyui-ollama** 与 **comfyui-ollama-describer** 加载的外部 Ollama 服务端显存：
+    * 节点 UI 中直接位于 **`HSWQ`** 正下方
+    * 专门针对 describer 默认的 `keep_model_alive=-1`（导致模型在后台常驻直至显式卸载）
+    * 自动抓取两套自定义节点包的 `api_host` / `url` 地址，循环轮询 `GET /api/ps` 直至列表清空
+    * 发送带 `keep_alive=0` 的 `/api/generate` 与 `/api/chat` 卸载请求，执行 `ollama stop`，并在可用时走 Client API 备用路径
+    * 清空进程内 `CHAT_SESSIONS` / `saved_context`，删除磁盘上的 `saved_context/` 文件，并通过最终 `/api/ps` 校验确保零残留显存占用
+* **架构与设计原理**：
+  * **工作流延续性**：通过类 id `DisTorchPurgeVRAMV2` 完整无缝平替已停更的 LayerStyle 节点，保障既有历史工作流正常运行。
+  * **超越标准 ComfyUI Unload**：ComfyUI 标准 `model_management.unload_all_models()` 仅管理其内部模型注册表中记录的模型，无法触及外部框架、自定义运行器缓存或第三方后台服务。
+  * **统一多引擎排空**：将 SeedVR2 独立模型缓存、Qwen3-VL 多设备自动映射、Nunchaku 特殊包装结构、HSWQ 锁定缓存/kitchen 工作区/NVFP4 CUDA 图、ModelPatchLoader 附属补丁以及外部 Ollama 服务端实例的显存回收，完全集中于单个节点一站式搞定，无需在工作流中串联多个冗余的独立清理节点。
 
 #### Memory Manager（高级）
 
