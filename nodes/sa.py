@@ -554,105 +554,106 @@ def _build_sage_attention_tail(sage_func, allow_compile):
     return attention_sage
 
 
+def _restore_previous(model, prev_override, prev_global_attn):
+    """
+    Restore the attention system to the exact state captured before this
+    node patched it. Never forces Flash-Attention.
+    """
+    if "transformer_options" not in model.model_options:
+        model.model_options["transformer_options"] = {}
+
+    if prev_override is not None:
+        model.model_options["transformer_options"]["optimized_attention_override"] = prev_override
+        logging.info("Restored previous optimized_attention_override")
+    else:
+        model.model_options["transformer_options"].pop("optimized_attention_override", None)
+        _ = prev_global_attn  # kept for API symmetry / future use
+        logging.info("Restored initial comfy attention (no previous override)")
+
+    try:
+        current = model.model_options["transformer_options"].get("optimized_attention_override")
+        if current is None:
+            name = getattr(comfy_attention.optimized_attention, "__name__", "unknown")
+            logging.info(f"[ComfyUI] Attention now: {name}")
+        else:
+            logging.info("[ComfyUI] Attention now: previous override restored")
+    except Exception:
+        pass
+
+
 class PatchSageAttentionDM():
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
             "model": ("MODEL",),
-            "sage_attention": (sageattn_modes, {"default": False, "tooltip": "Global patch comfy attention to use sageattn, once patched to revert back to normal you would need to run this node again with disabled option."}),
+            "sage_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use sageattn / spargeattn. Once patched, to revert run this node again with 'disabled'."}),
         },
         "optional": {
-            "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."}),
+            "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher. Not applied to SpargeAttn."}),
             "sparge_topk": ("COMBO", {"options": ["0.05", "0.1", "0.15", "0.2", "0.25", "0.3", "0.35", "0.4", "0.45", "0.5", "0.55", "0.6", "0.65", "0.7", "0.75", "0.8", "0.85", "0.9", "0.95", "1.0"], "default": "0.5", "tooltip": "SpargeAttn mode only: KV block keep ratio. Higher = more accurate, lower = faster. 1.0 = compute all blocks (no skipping). Kept after allow_compile so workflows saved before v2.4.7 load unchanged. String-based COMBO so the UI can never hold a broken value like 0. "})
             }
         }
 
     RETURN_TYPES = ("MODEL", )
     FUNCTION = "patch"
-    DESCRIPTION = "Experimental node for patching attention mode. This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option."
+    DESCRIPTION = (
+        "Experimental node for patching attention mode (SageAttention / SpargeAttn). "
+        "This doesn't use the model patching system and thus can't be disabled without "
+        "running the node again with 'disabled' option. On cleanup, restores the previous "
+        "attention override (does not force Flash Attention)."
+    )
     CATEGORY = "Memory"
 
     def patch(self, model, sage_attention, sparge_topk=None, allow_compile=False):
         model_clone = model.clone()
-        
+
+        # Capture whatever was previously installed so we can restore it.
+        prev_override = None
+        if (
+            "transformer_options" in model_clone.model_options
+            and "optimized_attention_override" in model_clone.model_options["transformer_options"]
+        ):
+            prev_override = model_clone.model_options["transformer_options"][
+                "optimized_attention_override"
+            ]
+        prev_global_attn = getattr(comfy_attention, "optimized_attention", None)
+
         @torch.compiler.disable()
-        def patch_attention_enable(model):
-            if sage_attention != "disabled":
-                if sage_attention == "spargeattn":
-                    # sparge_topk may arrive as None (old workflows without the
-                    # input) or 0.0 (widget-shifted legacy save shown as "0" in
-                    # the UI). get_sparge_func_dm sanitizes both to 0.5.
-                    _topk = sparge_topk
-                    try:
-                        # COMBO UI stores strings; legacy workflows may carry a
-                        # float, or a shifted/garbage value. All funnel through
-                        # get_sparge_func_dm's sanitizer.
-                        _topk = float(_topk) if _topk is not None else None
-                    except Exception:
-                        _topk = None
-                    new_attention = get_sparge_func_dm(sparge_topk=_topk)
-                else:
-                    new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
-                def attention_override_sage(func, *args, **kwargs):
-                    return new_attention.__wrapped__(*args, **kwargs)
-                
-                if "transformer_options" not in model.model_options:
-                    model.model_options["transformer_options"] = {}
-                model.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
+        def patch_attention_enable(m):
+            if sage_attention == "disabled":
+                _restore_previous(m, prev_override, prev_global_attn)
+                return
+
+            if sage_attention == "spargeattn":
+                # sparge_topk may arrive as None (old workflows without the
+                # input) or 0.0 (widget-shifted legacy save shown as "0" in
+                # the UI). get_sparge_func_dm sanitizes both to 0.5.
+                _topk = sparge_topk
+                try:
+                    # COMBO UI stores strings; legacy workflows may carry a
+                    # float, or a shifted/garbage value. All funnel through
+                    # get_sparge_func_dm's sanitizer.
+                    _topk = float(_topk) if _topk is not None else None
+                except Exception:
+                    _topk = None
+                new_attention = get_sparge_func_dm(sparge_topk=_topk)
             else:
-                # disabled: Load Flash-Attention if available (without --use-flash-attention option)
-                if "transformer_options" in model.model_options:
-                    if "optimized_attention_override" in model.model_options["transformer_options"]:
-                        del model.model_options["transformer_options"]["optimized_attention_override"]
-                
-                # Get Flash-Attention info using our own function (same as SA)
-                flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
-                
-                if flash_is_available and hasattr(comfy_attention, 'attention_flash'):
-                    # Set Flash-Attention as override
-                    if "transformer_options" not in model.model_options:
-                        model.model_options["transformer_options"] = {}
-                    
-                    def attention_override_flash(func, *args, **kwargs):
-                        return comfy_attention.attention_flash(*args, **kwargs)
-                    model.model_options["transformer_options"]["optimized_attention_override"] = attention_override_flash
-                    
-                    # Log Flash-Attention version (same format as SA)
-                    logging.info("Restoring initial comfy attention")
-                    if flash_attn_version and flash_attn_version != "unknown":
-                        if flash_attn_type:
-                            logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
-                        else:
-                            logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
-                    else:
-                        logging.info("[ComfyUI] Using Flash-Attention direct")
-                else:
-                    logging.info("Restoring initial comfy attention")
-        
+                new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
+
+            def attention_override_sage(func, *args, **kwargs):
+                # Compatibility with ComfyUI v0.38.0+ preferred_attention
+                kwargs.pop("preferred_attention", None)
+                return new_attention.__wrapped__(*args, **kwargs)
+
+            if "transformer_options" not in m.model_options:
+                m.model_options["transformer_options"] = {}
+            m.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
+
         @torch.compiler.disable()
-        def patch_attention_disable(model):
-            if "transformer_options" in model.model_options:
-                if "optimized_attention_override" in model.model_options["transformer_options"]:
-                    del model.model_options["transformer_options"]["optimized_attention_override"]
-            
-            # Output FA log even when SA is enabled, during reset
-            # Get Flash-Attention info using our own function (same as SA)
-            flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
-            
-            if flash_is_available:
-                logging.info("Restoring initial comfy attention")
-                # Log Flash-Attention version (same format as SA)
-                if flash_attn_version and flash_attn_version != "unknown":
-                    if flash_attn_type:
-                        logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
-                    else:
-                        logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
-                else:
-                    logging.info("[ComfyUI] Using Flash-Attention direct")
-            else:
-                logging.info("Restoring initial comfy attention")
-        
+        def patch_attention_disable(m):
+            _restore_previous(m, prev_override, prev_global_attn)
+
         model_clone.add_callback(CallbacksMP.ON_PRE_RUN, patch_attention_enable)
         model_clone.add_callback(CallbacksMP.ON_CLEANUP, patch_attention_disable)
-        
-        return model_clone,
+
+        return (model_clone,)
