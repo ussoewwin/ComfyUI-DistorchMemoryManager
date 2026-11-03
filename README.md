@@ -140,6 +140,7 @@ This is a completely original implementation designed specifically for Distorch 
     * `disabled`: Restore the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention
     * `auto`: Automatic SageAttention implementation
     * `fa2`: Flash-Attention (the installed flash-attn build, FA-2 or FA-3)
+* `comfy kitchen attention`: Comfy Kitchen INT8 attention, resolved through ComfyUI's own attention registry and falling back to PyTorch attention with the same warning when the backend is not registered
     * `sageattn_qk_int8_pv_fp16_cuda (for only sm80)`: CUDA implementation (QK int8, PV FP16); on sm100/sm120/sm121 the node uses the fp8 kernel with per-warp quantization
     * `sageattn_qk_int8_pv_fp16_triton`: Triton implementation (QK int8, PV FP16)
     * `sageattn_qk_int8_pv_fp8_cuda`: CUDA implementation (QK int8, PV FP8)
