@@ -391,7 +391,7 @@ class PatchSageAttentionDM():
     def INPUT_TYPES(s):
         return {"required": {
             "model": ("MODEL",),
-            "sage_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use sageattn or Flash-Attention. 'disabled' restores the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention; 'fa2' selects Flash-Attention explicitly."}),
+            "accel_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use SageAttention or Flash-Attention. 'disabled' restores the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention; 'fa2' selects Flash-Attention explicitly."}),
         },
         "optional": {
             "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."}),
@@ -403,7 +403,11 @@ class PatchSageAttentionDM():
     DESCRIPTION = "Experimental node for patching attention mode (SageAttention / Flash-Attention). This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option. On cleanup it restores the previous attention backend instead of forcing Flash-Attention."
     CATEGORY = "Memory"
 
-    def patch(self, model, sage_attention, allow_compile=False, **kwargs):
+    def patch(self, model, accel_attention="disabled", allow_compile=False, sage_attention=None, **kwargs):
+        # `sage_attention` is accepted for workflows saved before the widget rename.
+        if accel_attention is None and sage_attention is not None:
+            accel_attention = sage_attention
+        sage_attention = accel_attention
         model_clone = model.clone()
 
         # Capture whatever was previously installed so we can restore it.
