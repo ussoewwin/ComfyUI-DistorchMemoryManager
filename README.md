@@ -125,7 +125,7 @@ This is a completely original implementation designed specifically for Distorch 
    * `reset_virtual_memory`: Reset virtual memory
    * `restore_original_functions`: Restore original functions
 
-#### Patch Accel Attention DM (New in v2.3.0 as Patch Sage Attention DM)
+#### Patch Accel Attention DM (New in v2.3.0)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/sa.png" width="400">
