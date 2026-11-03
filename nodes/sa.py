@@ -120,7 +120,9 @@ def get_sage_attention_info():
         
         try:
             cuda_version = torch.version.cuda or "unknown"
-            torch_version = torch.version.__version__ or "unknown"
+            # torch.__version__ carries the local build suffix ("2.15.0+cu134");
+            # only the release part belongs in the log line.
+            torch_version = torch.__version__.split("+")[0] or "unknown"
         except:
             pass
     except:
@@ -259,10 +261,10 @@ def get_comfy_kitchen_func_dm():
     # Same log shape the SageAttention modes print.
     kitchen_version, cuda_version, torch_version = get_comfy_kitchen_info()
     if kitchen_version and kitchen_version != "unknown":
-        if cuda_version != "unknown" and torch_version != "unknown":
-            logging.info(f"Patching comfy attention to use Comfy Kitchen {kitchen_version}+cu{cuda_version}torch{torch_version}")
-        else:
+        if "+" in kitchen_version or cuda_version == "unknown" or torch_version == "unknown":
             logging.info(f"Patching comfy attention to use Comfy Kitchen {kitchen_version}")
+        else:
+            logging.info(f"Patching comfy attention to use Comfy Kitchen {kitchen_version}+cu{cuda_version}torch{torch_version}")
     else:
         logging.info("Patching comfy attention to use Comfy Kitchen")
     return attention_function
@@ -290,10 +292,12 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
         sage_version, cuda_version, torch_version = get_sage_attention_info()
         
         if sage_version and sage_version != "unknown":
-            if cuda_version != "unknown" and torch_version != "unknown":
-                logging.info(f"Patching comfy attention to use SageAttention {sage_version}+cu{cuda_version}torch{torch_version}")
-            else:
+            # A local version tag such as "+cu134torch2.15.0" is already part of
+            # sageattention.__version__, so appending it again would duplicate it.
+            if "+" in sage_version or cuda_version == "unknown" or torch_version == "unknown":
                 logging.info(f"Patching comfy attention to use SageAttention {sage_version}")
+            else:
+                logging.info(f"Patching comfy attention to use SageAttention {sage_version}+cu{cuda_version}torch{torch_version}")
         else:
             logging.info("Patching comfy attention to use sageattn")
     
