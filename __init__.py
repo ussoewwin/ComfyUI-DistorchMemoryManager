@@ -289,6 +289,6 @@ if DisTorchPurgeVRAMV2 is not None:
 
 # Register SageAttention node display name if available
 if PatchSageAttentionDM is not None:
-    NODE_DISPLAY_NAME_MAPPINGS["PatchSageAttentionDM"] = "Patch Sage Attention DM"
+    NODE_DISPLAY_NAME_MAPPINGS["PatchSageAttentionDM"] = "Patch Accel Attention DM"
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS'] 
