@@ -125,14 +125,14 @@
    * `reset_virtual_memory`：重置虚拟内存
    * `restore_original_functions`：恢复原始函数
 
-#### Patch Sage Attention DM（v2.3.0 新增）
+#### Patch Accel Attention DM（v2.3.0 新增，原名 Patch Sage Attention DM）
 
 <p align="center">
   <img src="../png/sa.png" width="400">
 </p>
 
-* **说明**：实验性节点，将 ComfyUI 注意力机制补丁为 SageAttention
-* **功能**：用 SageAttention 替换标准注意力，提升内存效率与性能
+* **说明**：实验性节点，将 ComfyUI 注意力机制补丁为选定的后端（SageAttention、Flash-Attention 或 Comfy Kitchen INT8）
+* **功能**：模型执行期间用选定后端替换标准注意力，结束后恢复 ComfyUI 原已配置的后端
 * **输入**：模型 (MODEL)
 * **输出**：模型 (MODEL)
 * **选项**：
@@ -140,21 +140,22 @@
     * `disabled`：恢复此前配置的注意力后端（即 ComfyUI 依启动参数选定的那个），不再强制使用 Flash-Attention
     * `auto`：自动实现
     * `fa2`：Flash-Attention（使用已安装的 flash-attn 版本，FA-2 或 FA-3）
-* `comfy kitchen attention`：Comfy Kitchen INT8 注意力，通过 ComfyUI 自身的注意力注册表解析；若该后端未注册，则以相同警告回退到 PyTorch 注意力
-    * `sageattn_qk_int8_pv_fp16_cuda (for only sm80)`：CUDA（QK int8，PV FP16）；在 sm100/sm120/sm121 上节点改用 fp8 内核并按 per-warp 量化运行
+    * `comfy kitchen attention`：Comfy Kitchen INT8 注意力，通过 ComfyUI 自身的注意力注册表解析；后端未注册时以 ComfyUI 自身的警告回退到 PyTorch 注意力
+    * `sageattn_qk_int8_pv_fp16_cuda (for only sm80)`：CUDA（QK int8，PV FP16）；fp16 累加内核仅为 sm80 构建，因此在 sm100/sm120/sm121 上运行 per-warp 量化的 fp8 内核
     * `sageattn_qk_int8_pv_fp16_triton`：Triton（QK int8，PV FP16）
     * `sageattn_qk_int8_pv_fp8_cuda`：CUDA（QK int8，PV FP8）
     * `sageattn_qk_int8_pv_fp8_cuda++`：CUDA（QK int8，PV FP8，优化版）
     * `sageattn3`：SageAttention 3（Blackwell）
     * `sageattn3_per_block_mean`：SageAttention 3（per-block mean）
-  * `allow_compile`：允许对 SageAttention 使用 torch.compile（需 sageattn 2.2.0+，默认 False）
-* **使用场景**：用 SageAttention 替换注意力以节省显存、提升性能。每次模型执行时打补丁并在结束后自动清理。
+  * `allow_compile`：允许对 SageAttention 使用 torch.compile（需 sageattn 2.2.0+，默认 False）；`fa2` 与 `comfy kitchen attention` 不使用该项
+* **使用场景**：在不改动 ComfyUI 启动参数的前提下，让当前模型使用指定注意力后端。每次模型执行时打补丁，清理时恢复捕获的后端。
 * **技术细节**：
   * 使用 ComfyUI 回调（ON_PRE_RUN、ON_CLEANUP）动态打补丁
-  * 自动检测 SageAttention 版本并记录详情
-  * 清理时恢复此前的注意力后端；日志文案保持不变，仅在实际使用 Flash-Attention 时输出该行
+  * 每次运行输出一次解析到的构建：`Patching comfy attention to use SageAttention <version>+cu<cuda>torch<torch>`、`Patching comfy attention to use Comfy Kitchen <version>+cu<cuda>torch<torch>`，或 `fa2` 的 `[ComfyUI] Using FA-2/FA-3 (Flash-Attention <version>) direct`
+  * 清理时恢复此前的注意力后端；本节点运行后由其他组件安装的 override 不会被覆盖
   * 通过 wrap_attn 兼容 ComfyUI 注意力格式
-  * 支持多种实现（CUDA、Triton、SageAttention 3）
+  * `comfy kitchen attention` 解析到与 ComfyUI 自带 `Model Attention Backend` 相同的后端，并继承其 container 函数，因此注意力张量容器走预量化路径
+  * 节点显示名为 `Patch Accel Attention DM`；注册键与类名保持不变
 
 ## 安装
 
@@ -314,7 +315,7 @@ pip install -r requirements.txt
 * ModelPatchLoader 工作流：放大前务必使用 General Purge VRAM V2（`clear_model_patches: True`）
 * Qwen3-VL：使用 DisTorchPurgeVRAMV2 且 `purge_qwen3vl_models: True`
 * Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）：`purge_nunchaku_models: True`；SDXL v2.2.0 约可释放 2.5GB
-* SageAttention（v2.3.0）：使用 Patch Sage Attention DM；如需切回此前配置的注意力后端，可将 `accel_attention` 设为 `disabled` 再运行一次；如需显式使用 Flash-Attention，请选择 `fa2`
+* 注意力后端选择：使用 **Patch Accel Attention DM** 节点让当前模型使用指定注意力后端。SageAttention 选择 `auto` 或任一 `sageattn_*` 模式，Flash-Attention 选择 `fa2`，Comfy Kitchen INT8 选择 `comfy kitchen attention`。节点在每次模型执行时打补丁、清理时恢复捕获的后端；如需显式恢复，可将 `accel_attention` 设为 `disabled` 再运行一次
 * **多进程环境（v2.4.0）**：启动时通过 NVML 自动检测非 PyTorch VRAM 并应用于 General Manage VRAM，无需手动配置节点
 
 ## 许可证
