@@ -356,7 +356,7 @@ def _build_sage_attention_tail(sage_func, allow_compile):
     return attention_sage
 
 
-def _restore_previous(model, prev_override, prev_global_attn):
+def _restore_previous(model, prev_override, prev_global_attn, report_flash=False):
     """
     Restore the attention system to the exact state captured before this
     node patched it. Never forces Flash-Attention.
@@ -372,27 +372,18 @@ def _restore_previous(model, prev_override, prev_global_attn):
     # Same line the node has always printed when the override is removed.
     logging.info("Restoring initial comfy attention")
 
-    # The Flash-Attention build line is printed only when Flash-Attention is the
-    # backend that is actually active, so the log never claims a backend that is
-    # not in use.
-    current = model.model_options["transformer_options"].get("optimized_attention_override")
-    if current is None:
-        active_name = getattr(prev_global_attn, "__name__", None)
-        if not active_name:
-            active_name = getattr(comfy_attention.optimized_attention, "__name__", "")
-        flash_active = active_name == "attention_flash"
-    else:
-        flash_active = "flash" in (getattr(current, "__qualname__", "") or "").lower()
-
-    if flash_active:
+    # The Flash-Attention line is part of the log the node has always produced
+    # after it restores, so it is kept for every mode except 'disabled'.
+    if report_flash:
         flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
-        if flash_attn_version and flash_attn_version != "unknown":
-            if flash_attn_type:
-                logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+        if flash_is_available:
+            if flash_attn_version and flash_attn_version != "unknown":
+                if flash_attn_type:
+                    logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+                else:
+                    logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
             else:
-                logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
-        else:
-            logging.info("[ComfyUI] Using Flash-Attention direct")
+                logging.info("[ComfyUI] Using Flash-Attention direct")
 
 
 class PatchSageAttentionDM():
@@ -433,7 +424,7 @@ class PatchSageAttentionDM():
         def patch_attention_enable(m):
             nonlocal installed_override, prev_override
             if sage_attention == "disabled":
-                _restore_previous(m, prev_override, prev_global_attn)
+                _restore_previous(m, prev_override, prev_global_attn, report_flash=False)
                 return
 
             if sage_attention == "fa2":
@@ -443,7 +434,7 @@ class PatchSageAttentionDM():
                         "Cannot use the 'fa2' mode because %s; keeping the previously configured attention backend."
                         % unavailable_reason
                     )
-                    _restore_previous(m, prev_override, prev_global_attn)
+                    _restore_previous(m, prev_override, prev_global_attn, report_flash=True)
                     return
             else:
                 new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
@@ -476,7 +467,7 @@ class PatchSageAttentionDM():
             if installed_override is not None and current is not installed_override:
                 logging.info("[ComfyUI] Restoring initial comfy attention")
                 return
-            _restore_previous(m, prev_override, prev_global_attn)
+            _restore_previous(m, prev_override, prev_global_attn, report_flash=(sage_attention != "disabled"))
 
         model_clone.add_callback(CallbacksMP.ON_PRE_RUN, patch_attention_enable)
         model_clone.add_callback(CallbacksMP.ON_CLEANUP, patch_attention_disable)
