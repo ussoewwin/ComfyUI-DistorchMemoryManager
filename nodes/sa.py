@@ -317,7 +317,7 @@ def _build_sage_attention_tail(sage_func, allow_compile):
         use_pytorch_fallback = False
         try:
             # sm_scale / smooth_k mirror ComfyUI 0.38.x native attention_sage contract
-            out = sage_func(q, k, v, attn_mask=mask, is_causal=is_causal, tensor_layout=tensor_layout,
+            out = sage_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout,
                             sm_scale=kwargs.get("scale", None), smooth_k=False).to(in_dtype)
         except Exception as e:
             # Keep this suppression narrowly scoped so only the known SD1.5-style
