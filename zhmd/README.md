@@ -151,7 +151,7 @@
 * **技术细节**：
   * 使用 ComfyUI 回调（ON_PRE_RUN、ON_CLEANUP）动态打补丁
   * 自动检测 SageAttention 版本并记录详情
-  * 清理时恢复此前的注意力后端，并记录实际生效的后端
+  * 清理时恢复此前的注意力后端；日志文案保持不变，仅在实际使用 Flash-Attention 时输出该行
   * 通过 wrap_attn 兼容 ComfyUI 注意力格式
   * 支持多种实现（CUDA、Triton、SageAttention 3）
 

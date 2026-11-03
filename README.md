@@ -151,7 +151,7 @@ This is a completely original implementation designed specifically for Distorch 
 * **Technical Details**:
   * Uses ComfyUI's callback system (ON_PRE_RUN, ON_CLEANUP) to patch attention dynamically
   * Automatically detects SageAttention version and logs detailed information
-  * Restores the previous attention backend on cleanup and logs the backend that is actually active
+  * Restores the previous attention backend on cleanup; log wording is unchanged and the Flash-Attention line is printed only when Flash-Attention is in use
   * Compatible with ComfyUI's attention function format via wrap_attn decorator
   * Supports multiple SageAttention implementations (CUDA, Triton, SageAttention 3)
 
