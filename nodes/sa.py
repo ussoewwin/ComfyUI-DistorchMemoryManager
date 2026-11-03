@@ -129,6 +129,40 @@ def get_sage_attention_info():
     return sage_version, cuda_version, torch_version
 
 
+# Comfy Kitchen version detection
+def get_comfy_kitchen_info():
+    """
+    Get Comfy Kitchen version information.
+    Returns: (version, cuda_version, torch_version)
+    """
+    kitchen_version = None
+    cuda_version = "unknown"
+    torch_version = "unknown"
+
+    try:
+        import comfy_kitchen
+        try:
+            kitchen_version = comfy_kitchen.__version__
+        except AttributeError:
+            try:
+                import importlib.metadata
+                kitchen_version = importlib.metadata.version("comfy_kitchen")
+            except Exception:
+                kitchen_version = None
+
+        try:
+            cuda_version = torch.version.cuda or "unknown"
+            # torch.__version__ carries the local build suffix ("2.15.0+cu134");
+            # only the release part belongs in the log line.
+            torch_version = torch.__version__.split("+")[0] or "unknown"
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return kitchen_version, cuda_version, torch_version
+
+
 # SageAttention3 version detection (independent from model_management)
 def get_sage_attention3_info():
     """
@@ -220,7 +254,17 @@ def get_comfy_kitchen_func_dm():
             "Attention backend '%s' is unavailable; using PyTorch attention.",
             "comfy kitchen attention",
         )
-        attention_function = comfy_attention.get_attention_function("pytorch")
+        return comfy_attention.get_attention_function("pytorch")
+
+    # Same log shape the SageAttention modes print.
+    kitchen_version, cuda_version, torch_version = get_comfy_kitchen_info()
+    if kitchen_version and kitchen_version != "unknown":
+        if cuda_version != "unknown" and torch_version != "unknown":
+            logging.info(f"Patching comfy attention to use Comfy Kitchen {kitchen_version}+cu{cuda_version}torch{torch_version}")
+        else:
+            logging.info(f"Patching comfy attention to use Comfy Kitchen {kitchen_version}")
+    else:
+        logging.info("Patching comfy attention to use Comfy Kitchen")
     return attention_function
 
 
