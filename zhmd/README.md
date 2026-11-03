@@ -125,7 +125,7 @@
    * `reset_virtual_memory`：重置虚拟内存
    * `restore_original_functions`：恢复原始函数
 
-#### Patch Accel Attention DM（v2.3.0 新增，原名 Patch Sage Attention DM）
+#### Patch Accel Attention DM（v2.3.0 新增）
 
 <p align="center">
   <img src="../png/sa.png" width="400">
