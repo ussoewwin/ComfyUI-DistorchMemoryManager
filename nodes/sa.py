@@ -403,11 +403,7 @@ class PatchSageAttentionDM():
     DESCRIPTION = "Experimental node for patching attention mode (SageAttention / Flash-Attention). This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option. On cleanup it restores the previous attention backend instead of forcing Flash-Attention."
     CATEGORY = "Memory"
 
-    def patch(self, model, accel_attention="disabled", allow_compile=False, sage_attention=None, **kwargs):
-        # `sage_attention` is accepted for workflows saved before the widget rename.
-        if accel_attention is None and sage_attention is not None:
-            accel_attention = sage_attention
-        sage_attention = accel_attention
+    def patch(self, model, accel_attention, allow_compile=False, **kwargs):
         model_clone = model.clone()
 
         # Capture whatever was previously installed so we can restore it.
@@ -427,11 +423,11 @@ class PatchSageAttentionDM():
         @torch.compiler.disable()
         def patch_attention_enable(m):
             nonlocal installed_override, prev_override
-            if sage_attention == "disabled":
+            if accel_attention == "disabled":
                 _restore_previous(m, prev_override, prev_global_attn, report_flash=False)
                 return
 
-            if sage_attention == "fa2":
+            if accel_attention == "fa2":
                 new_override, unavailable_reason = get_flash_func_dm()
                 if new_override is None:
                     logging.error(
@@ -441,7 +437,7 @@ class PatchSageAttentionDM():
                     _restore_previous(m, prev_override, prev_global_attn, report_flash=True)
                     return
             else:
-                new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
+                new_attention = get_sage_func_dm(accel_attention, allow_compile=allow_compile)
 
                 def attention_override_sage(func, *args, **kwargs):
                     # Compatibility with ComfyUI v0.38.0+ preferred_attention
@@ -471,7 +467,7 @@ class PatchSageAttentionDM():
             if installed_override is not None and current is not installed_override:
                 logging.info("[ComfyUI] Restoring initial comfy attention")
                 return
-            _restore_previous(m, prev_override, prev_global_attn, report_flash=(sage_attention != "disabled"))
+            _restore_previous(m, prev_override, prev_global_attn, report_flash=(accel_attention != "disabled"))
 
         model_clone.add_callback(CallbacksMP.ON_PRE_RUN, patch_attention_enable)
         model_clone.add_callback(CallbacksMP.ON_CLEANUP, patch_attention_disable)
