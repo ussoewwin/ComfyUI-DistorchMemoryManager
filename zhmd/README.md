@@ -140,6 +140,7 @@
     * `disabled`：恢复此前配置的注意力后端（即 ComfyUI 依启动参数选定的那个），不再强制使用 Flash-Attention
     * `auto`：自动实现
     * `fa2`：Flash-Attention（使用已安装的 flash-attn 版本，FA-2 或 FA-3）
+* `comfy kitchen attention`：Comfy Kitchen INT8 注意力，通过 ComfyUI 自身的注意力注册表解析；若该后端未注册，则以相同警告回退到 PyTorch 注意力
     * `sageattn_qk_int8_pv_fp16_cuda (for only sm80)`：CUDA（QK int8，PV FP16）；在 sm100/sm120/sm121 上节点改用 fp8 内核并按 per-warp 量化运行
     * `sageattn_qk_int8_pv_fp16_triton`：Triton（QK int8，PV FP16）
     * `sageattn_qk_int8_pv_fp8_cuda`：CUDA（QK int8，PV FP8）

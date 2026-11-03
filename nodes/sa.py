@@ -15,7 +15,7 @@ except Exception:
     mm = None
 
 # SageAttention modes
-sageattn_modes = ["disabled", "auto", "fa2", "sageattn_qk_int8_pv_fp16_cuda (for only sm80)", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
+sageattn_modes = ["disabled", "auto", "fa2", "comfy kitchen attention", "sageattn_qk_int8_pv_fp16_cuda (for only sm80)", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 _logged_sage_fallback_messages = set()
 
 
@@ -205,6 +205,38 @@ def get_flash_func_dm():
         return comfy_attention.attention_flash(*args, **kwargs)
 
     return attention_override_flash, None
+
+
+def get_comfy_kitchen_func_dm():
+    """
+    Resolve the 'comfy kitchen attention' backend exactly like ComfyUI's own
+    Model Attention Backend node: ask the attention registry for
+    'comfy_kitchen_int8' with no default, and fall back to PyTorch attention
+    with the same warning when the backend is not registered.
+    """
+    attention_function = comfy_attention.get_attention_function("comfy_kitchen_int8", None)
+    if attention_function is None:
+        logging.warning(
+            "Attention backend '%s' is unavailable; using PyTorch attention.",
+            "comfy kitchen attention",
+        )
+        attention_function = comfy_attention.get_attention_function("pytorch")
+    return attention_function
+
+
+def make_comfy_kitchen_override_dm(attention_function):
+    """
+    Wrap the resolved backend the same way ModelPatcher.set_model_optimized_attention
+    does, including carrying over container_function so the prequantized
+    attention path is kept.
+    """
+    def optimized_attention_override(_, *args, **kwargs):
+        return attention_function(*args, **kwargs)
+
+    container_function = getattr(attention_function, "container_function", None)
+    if container_function is not None:
+        optimized_attention_override.container_function = container_function
+    return optimized_attention_override
 
 
 def get_sage_func_dm(sage_attention, allow_compile=False):
@@ -420,7 +452,7 @@ class PatchSageAttentionDM():
     def INPUT_TYPES(s):
         return {"required": {
             "model": ("MODEL",),
-            "accel_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use SageAttention or Flash-Attention. 'disabled' restores the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention; 'fa2' selects Flash-Attention explicitly."}),
+            "accel_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use SageAttention, Flash-Attention, or the Comfy Kitchen INT8 backend. 'disabled' restores the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention; 'fa2' selects Flash-Attention explicitly."}),
         },
         "optional": {
             "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."}),
@@ -429,7 +461,7 @@ class PatchSageAttentionDM():
 
     RETURN_TYPES = ("MODEL", )
     FUNCTION = "patch"
-    DESCRIPTION = "Experimental node for patching attention mode (SageAttention / Flash-Attention). This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option. On cleanup it restores the previous attention backend instead of forcing Flash-Attention."
+    DESCRIPTION = "Experimental node for patching attention mode (SageAttention / Flash-Attention / Comfy Kitchen). This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option. On cleanup it restores the previous attention backend instead of forcing Flash-Attention."
     CATEGORY = "Memory"
 
     def patch(self, model, accel_attention, allow_compile=False, **kwargs):
@@ -456,7 +488,9 @@ class PatchSageAttentionDM():
                 _restore_previous(m, prev_override, prev_global_attn, report_flash=False)
                 return
 
-            if accel_attention == "fa2":
+            if accel_attention == "comfy kitchen attention":
+                new_override = make_comfy_kitchen_override_dm(get_comfy_kitchen_func_dm())
+            elif accel_attention == "fa2":
                 new_override, unavailable_reason = get_flash_func_dm()
                 if new_override is None:
                     logging.error(
