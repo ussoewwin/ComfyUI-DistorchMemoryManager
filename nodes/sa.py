@@ -15,7 +15,7 @@ except Exception:
     mm = None
 
 # SageAttention modes
-sageattn_modes = ["disabled", "auto", "fa2", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
+sageattn_modes = ["disabled", "auto", "fa2", "sageattn_qk_int8_pv_fp16_cuda (for only sm80)", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 _logged_sage_fallback_messages = set()
 
 
@@ -28,6 +28,24 @@ def _gqa_expand_kv(k, v, query_heads, head_dim):
         k = k.repeat_interleave(n_rep, dim=head_dim)
         v = v.repeat_interleave(n_rep, dim=head_dim)
     return k, v
+
+
+def _current_cuda_arch():
+    """Return the SM name of the active CUDA device (e.g. "sm120")."""
+    if not torch.cuda.is_available():
+        return ""
+    major, minor = torch.cuda.get_device_capability()
+    return f"sm{major}{minor}"
+
+
+def _cuda_version_at_least(major, minor):
+    """Compare the CUDA runtime version reported by torch."""
+    version = torch.version.cuda or "0.0"
+    try:
+        parts = tuple(int(x) for x in version.split(".")[:2])
+    except Exception:
+        return False
+    return parts >= (major, minor)
 
 
 # Flash-Attention version detection (independent from model_management)
@@ -210,10 +228,21 @@ def get_sage_func_dm(sage_attention, allow_compile=False):
     if sage_attention == "auto":
         def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
             return sageattn(q, k, v, is_causal=is_causal, attn_mask=attn_mask, tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
-    elif sage_attention == "sageattn_qk_int8_pv_fp16_cuda":
-        from sageattention import sageattn_qk_int8_pv_fp16_cuda
-        def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
-            return sageattn_qk_int8_pv_fp16_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32", tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
+    elif sage_attention.startswith("sageattn_qk_int8_pv_fp16_cuda"):
+        # The fp16-accumulate kernel is built for sm80 only, so Blackwell
+        # (sm100/sm120/sm121) has to take the fp8 kernel with per-warp
+        # quantization, exactly as sageattention's own dispatcher does.
+        _arch = _current_cuda_arch()
+        if _arch in {"sm100", "sm120", "sm121"}:
+            from sageattention import sageattn_qk_int8_pv_fp8_cuda
+            _pv = "fp32+fp16" if _cuda_version_at_least(12, 8) else "fp32"
+            logging.info(f"SageAttention: {_arch} has no fp16-accumulate kernel; using the fp8 kernel (qk_quant_gran=per_warp, pv_accum_dtype={_pv})")
+            def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+                return sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, qk_quant_gran="per_warp", pv_accum_dtype=_pv, tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
+        else:
+            from sageattention import sageattn_qk_int8_pv_fp16_cuda
+            def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
+                return sageattn_qk_int8_pv_fp16_cuda(q, k, v, is_causal=is_causal, attn_mask=attn_mask, pv_accum_dtype="fp32", tensor_layout=tensor_layout, sm_scale=sm_scale, smooth_k=smooth_k)
     elif sage_attention == "sageattn_qk_int8_pv_fp16_triton":
         from sageattention import sageattn_qk_int8_pv_fp16_triton
         def sage_func(q, k, v, is_causal=False, attn_mask=None, tensor_layout="NHD", sm_scale=None, smooth_k=False):
