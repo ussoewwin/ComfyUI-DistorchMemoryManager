@@ -15,7 +15,7 @@ except Exception:
     mm = None
 
 # SageAttention modes
-sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
+sageattn_modes = ["disabled", "auto", "fa2", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 _logged_sage_fallback_messages = set()
 
 
@@ -158,6 +158,34 @@ def is_flash_attention_enabled():
         return True
     
     return False
+
+
+def get_flash_func_dm():
+    """
+    Build the Flash-Attention override used by the 'fa2' mode.
+
+    Returns: (override_function, None) on success, or (None, reason) when
+    Flash-Attention cannot be used, with the actual reason for the failure.
+    """
+    flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
+
+    if not flash_is_available:
+        return None, "the flash-attn package could not be imported"
+    if not hasattr(comfy_attention, "attention_flash"):
+        return None, "comfy.ldm.modules.attention does not provide attention_flash"
+
+    if flash_attn_version and flash_attn_version != "unknown":
+        if flash_attn_type:
+            logging.info(f"Patching comfy attention to use {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+        else:
+            logging.info(f"Patching comfy attention to use Flash-Attention {flash_attn_version} direct")
+    else:
+        logging.info("Patching comfy attention to use Flash-Attention direct")
+
+    def attention_override_flash(func, *args, **kwargs):
+        return comfy_attention.attention_flash(*args, **kwargs)
+
+    return attention_override_flash, None
 
 
 def get_sage_func_dm(sage_attention, allow_compile=False):
@@ -340,18 +368,16 @@ def _restore_previous(model, prev_override, prev_global_attn):
         logging.info("Restored previous optimized_attention_override")
     else:
         model.model_options["transformer_options"].pop("optimized_attention_override", None)
-        _ = prev_global_attn  # kept for API symmetry / future use
         logging.info("Restored initial comfy attention (no previous override)")
 
-    try:
-        current = model.model_options["transformer_options"].get("optimized_attention_override")
-        if current is None:
+    current = model.model_options["transformer_options"].get("optimized_attention_override")
+    if current is None:
+        name = getattr(prev_global_attn, "__name__", None)
+        if not name:
             name = getattr(comfy_attention.optimized_attention, "__name__", "unknown")
-            logging.info(f"[ComfyUI] Attention now: {name}")
-        else:
-            logging.info("[ComfyUI] Attention now: previous override restored")
-    except Exception:
-        pass
+        logging.info(f"[ComfyUI] Attention now: {name}")
+    else:
+        logging.info("[ComfyUI] Attention now: previous override restored")
 
 
 class PatchSageAttentionDM():
@@ -359,7 +385,7 @@ class PatchSageAttentionDM():
     def INPUT_TYPES(s):
         return {"required": {
             "model": ("MODEL",),
-            "sage_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use sageattn, once patched to revert back to normal you would need to run this node again with disabled option."}),
+            "sage_attention": (sageattn_modes, {"default": "disabled", "tooltip": "Global patch comfy attention to use sageattn or Flash-Attention. 'disabled' restores the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention; 'fa2' selects Flash-Attention explicitly."}),
         },
         "optional": {
             "allow_compile": ("BOOLEAN", {"default": False, "tooltip": "Allow the use of torch.compile for the sage attention function, requires latest sageattn 2.2.0 or higher."}),
@@ -368,7 +394,7 @@ class PatchSageAttentionDM():
 
     RETURN_TYPES = ("MODEL", )
     FUNCTION = "patch"
-    DESCRIPTION = "Experimental node for patching attention mode. This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option."
+    DESCRIPTION = "Experimental node for patching attention mode (SageAttention / Flash-Attention). This doesn't use the model patching system and thus can't be disabled without running the node again with 'disabled' option. On cleanup it restores the previous attention backend instead of forcing Flash-Attention."
     CATEGORY = "Memory"
 
     def patch(self, model, sage_attention, allow_compile=False, **kwargs):
@@ -384,26 +410,59 @@ class PatchSageAttentionDM():
                 "optimized_attention_override"
             ]
         prev_global_attn = getattr(comfy_attention, "optimized_attention", None)
+        # The override this node installs, used to tell our own override apart
+        # from one another component installed after this node ran.
+        installed_override = None
 
         @torch.compiler.disable()
         def patch_attention_enable(m):
+            nonlocal installed_override, prev_override
             if sage_attention == "disabled":
                 _restore_previous(m, prev_override, prev_global_attn)
                 return
 
-            new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
+            if sage_attention == "fa2":
+                new_override, unavailable_reason = get_flash_func_dm()
+                if new_override is None:
+                    logging.error(
+                        "Cannot use the 'fa2' mode because %s; keeping the previously configured attention backend."
+                        % unavailable_reason
+                    )
+                    _restore_previous(m, prev_override, prev_global_attn)
+                    return
+            else:
+                new_attention = get_sage_func_dm(sage_attention, allow_compile=allow_compile)
 
-            def attention_override_sage(func, *args, **kwargs):
-                # Compatibility with ComfyUI v0.38.0+ preferred_attention
-                kwargs.pop("preferred_attention", None)
-                return new_attention.__wrapped__(*args, **kwargs)
+                def attention_override_sage(func, *args, **kwargs):
+                    # Compatibility with ComfyUI v0.38.0+ preferred_attention
+                    kwargs.pop("preferred_attention", None)
+                    return new_attention.__wrapped__(*args, **kwargs)
+
+                new_override = attention_override_sage
+
+            # If another component installed an override after this node ran,
+            # remember it so cleanup restores that one instead of the state
+            # captured when the node was created.
+            current = m.model_options.get("transformer_options", {}).get("optimized_attention_override")
+            if current is not None and current is not installed_override:
+                prev_override = current
 
             if "transformer_options" not in m.model_options:
                 m.model_options["transformer_options"] = {}
-            m.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
+            m.model_options["transformer_options"]["optimized_attention_override"] = new_override
+            installed_override = new_override
 
         @torch.compiler.disable()
         def patch_attention_disable(m):
+            # Another component may have taken over the override after this
+            # node installed its own; leave that one alone instead of
+            # replacing it with the captured previous state.
+            current = m.model_options.get("transformer_options", {}).get("optimized_attention_override")
+            if installed_override is not None and current is not installed_override:
+                logging.info(
+                    "[ComfyUI] Attention override was replaced by another component; leaving it untouched."
+                )
+                return
             _restore_previous(m, prev_override, prev_global_attn)
 
         model_clone.add_callback(CallbacksMP.ON_PRE_RUN, patch_attention_enable)

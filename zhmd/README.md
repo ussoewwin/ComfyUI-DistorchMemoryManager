@@ -136,9 +136,10 @@
 * **输入**：模型 (MODEL)
 * **输出**：模型 (MODEL)
 * **选项**：
-  * `sage_attention`：SageAttention 模式
-    * `disabled`：禁用（恢复原版注意力）
+  * `sage_attention`：注意力后端选择
+    * `disabled`：恢复此前配置的注意力后端（即 ComfyUI 依启动参数选定的那个），不再强制使用 Flash-Attention
     * `auto`：自动实现
+    * `fa2`：Flash-Attention（使用已安装的 flash-attn 版本，FA-2 或 FA-3）
     * `sageattn_qk_int8_pv_fp16_cuda`：CUDA（QK int8，PV FP16）
     * `sageattn_qk_int8_pv_fp16_triton`：Triton（QK int8，PV FP16）
     * `sageattn_qk_int8_pv_fp8_cuda`：CUDA（QK int8，PV FP8）
@@ -150,7 +151,7 @@
 * **技术细节**：
   * 使用 ComfyUI 回调（ON_PRE_RUN、ON_CLEANUP）动态打补丁
   * 自动检测 SageAttention 版本并记录详情
-  * 禁用时检测并记录 Flash-Attention 状态
+  * 清理时恢复此前的注意力后端，并记录实际生效的后端
   * 通过 wrap_attn 兼容 ComfyUI 注意力格式
   * 支持多种实现（CUDA、Triton、SageAttention 3）
 
@@ -312,7 +313,7 @@ pip install -r requirements.txt
 * ModelPatchLoader 工作流：放大前务必使用 General Purge VRAM V2（`clear_model_patches: True`）
 * Qwen3-VL：使用 DisTorchPurgeVRAMV2 且 `purge_qwen3vl_models: True`
 * Nunchaku（FLUX/Z-Image/Qwen-Image/SDXL）：`purge_nunchaku_models: True`；SDXL v2.2.0 约可释放 2.5GB
-* SageAttention（v2.3.0）：使用 Patch Sage Attention DM；禁用可将 `sage_attention` 设为 `disabled` 再运行一次
+* SageAttention（v2.3.0）：使用 Patch Sage Attention DM；如需切回此前配置的注意力后端，可将 `sage_attention` 设为 `disabled` 再运行一次；如需显式使用 Flash-Attention，请选择 `fa2`
 * **多进程环境（v2.4.0）**：启动时通过 NVML 自动检测非 PyTorch VRAM 并应用于 General Manage VRAM，无需手动配置节点
 
 ## 许可证
