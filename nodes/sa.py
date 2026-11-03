@@ -174,13 +174,14 @@ def get_flash_func_dm():
     if not hasattr(comfy_attention, "attention_flash"):
         return None, "comfy.ldm.modules.attention does not provide attention_flash"
 
+    logging.info("Restoring initial comfy attention")
     if flash_attn_version and flash_attn_version != "unknown":
         if flash_attn_type:
-            logging.info(f"Patching comfy attention to use {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+            logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
         else:
-            logging.info(f"Patching comfy attention to use Flash-Attention {flash_attn_version} direct")
+            logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
     else:
-        logging.info("Patching comfy attention to use Flash-Attention direct")
+        logging.info("[ComfyUI] Using Flash-Attention direct")
 
     def attention_override_flash(func, *args, **kwargs):
         return comfy_attention.attention_flash(*args, **kwargs)
@@ -365,19 +366,33 @@ def _restore_previous(model, prev_override, prev_global_attn):
 
     if prev_override is not None:
         model.model_options["transformer_options"]["optimized_attention_override"] = prev_override
-        logging.info("Restored previous optimized_attention_override")
     else:
         model.model_options["transformer_options"].pop("optimized_attention_override", None)
-        logging.info("Restored initial comfy attention (no previous override)")
 
+    # Same line the node has always printed when the override is removed.
+    logging.info("Restoring initial comfy attention")
+
+    # The Flash-Attention build line is printed only when Flash-Attention is the
+    # backend that is actually active, so the log never claims a backend that is
+    # not in use.
     current = model.model_options["transformer_options"].get("optimized_attention_override")
     if current is None:
-        name = getattr(prev_global_attn, "__name__", None)
-        if not name:
-            name = getattr(comfy_attention.optimized_attention, "__name__", "unknown")
-        logging.info(f"[ComfyUI] Attention now: {name}")
+        active_name = getattr(prev_global_attn, "__name__", None)
+        if not active_name:
+            active_name = getattr(comfy_attention.optimized_attention, "__name__", "")
+        flash_active = active_name == "attention_flash"
     else:
-        logging.info("[ComfyUI] Attention now: previous override restored")
+        flash_active = "flash" in (getattr(current, "__qualname__", "") or "").lower()
+
+    if flash_active:
+        flash_is_available, flash_attn_version, flash_attn_type = get_flash_attention_info()
+        if flash_attn_version and flash_attn_version != "unknown":
+            if flash_attn_type:
+                logging.info(f"[ComfyUI] Using {flash_attn_type} (Flash-Attention {flash_attn_version}) direct")
+            else:
+                logging.info(f"[ComfyUI] Using Flash-Attention {flash_attn_version} direct")
+        else:
+            logging.info("[ComfyUI] Using Flash-Attention direct")
 
 
 class PatchSageAttentionDM():
@@ -459,9 +474,7 @@ class PatchSageAttentionDM():
             # replacing it with the captured previous state.
             current = m.model_options.get("transformer_options", {}).get("optimized_attention_override")
             if installed_override is not None and current is not installed_override:
-                logging.info(
-                    "[ComfyUI] Attention override was replaced by another component; leaving it untouched."
-                )
+                logging.info("[ComfyUI] Restoring initial comfy attention")
                 return
             _restore_previous(m, prev_override, prev_global_attn)
 
