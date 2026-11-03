@@ -125,14 +125,14 @@ This is a completely original implementation designed specifically for Distorch 
    * `reset_virtual_memory`: Reset virtual memory
    * `restore_original_functions`: Restore original functions
 
-#### Patch Sage Attention DM (New in v2.3.0)
+#### Patch Accel Attention DM (New in v2.3.0 as Patch Sage Attention DM)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/ussoewwin/ComfyUI-DistorchMemoryManager/main/png/sa.png" width="400">
 </p>
 
-* **Description**: Experimental node for patching ComfyUI's attention mechanism to use SageAttention
-* **Features**: Replaces ComfyUI's standard attention with SageAttention for improved memory efficiency and performance
+* **Description**: Experimental node for patching ComfyUI's attention mechanism to a selected backend (SageAttention, Flash-Attention, or Comfy Kitchen INT8)
+* **Features**: Replaces ComfyUI's standard attention with the selected backend while the model runs, then restores the backend ComfyUI had configured
 * **Input**: Model (MODEL)
 * **Output**: Model (MODEL)
 * **Options**:
@@ -140,21 +140,22 @@ This is a completely original implementation designed specifically for Distorch 
     * `disabled`: Restore the previously configured attention backend (the one ComfyUI selected from its startup arguments) instead of forcing Flash-Attention
     * `auto`: Automatic SageAttention implementation
     * `fa2`: Flash-Attention (the installed flash-attn build, FA-2 or FA-3)
-* `comfy kitchen attention`: Comfy Kitchen INT8 attention, resolved through ComfyUI's own attention registry and falling back to PyTorch attention with the same warning when the backend is not registered
-    * `sageattn_qk_int8_pv_fp16_cuda (for only sm80)`: CUDA implementation (QK int8, PV FP16); on sm100/sm120/sm121 the node uses the fp8 kernel with per-warp quantization
+    * `comfy kitchen attention`: Comfy Kitchen INT8 attention, resolved through ComfyUI's own attention registry; when the backend is not registered it falls back to PyTorch attention with ComfyUI's own warning
+    * `sageattn_qk_int8_pv_fp16_cuda (for only sm80)`: CUDA implementation (QK int8, PV FP16); the fp16-accumulate kernel is built for sm80 only, so sm100/sm120/sm121 run the fp8 kernel with per-warp quantization
     * `sageattn_qk_int8_pv_fp16_triton`: Triton implementation (QK int8, PV FP16)
     * `sageattn_qk_int8_pv_fp8_cuda`: CUDA implementation (QK int8, PV FP8)
     * `sageattn_qk_int8_pv_fp8_cuda++`: CUDA implementation (QK int8, PV FP8, optimized)
     * `sageattn3`: SageAttention 3 implementation (Blackwell support)
     * `sageattn3_per_block_mean`: SageAttention 3 implementation (per-block mean version)
-  * `allow_compile`: Allow torch.compile for SageAttention function (requires sageattn 2.2.0 or higher, default: False)
-* **Use Case**: Use this node to replace ComfyUI's attention mechanism with SageAttention for better memory efficiency and performance. The node patches attention on each model execution and automatically cleans up afterward.
+  * `allow_compile`: Allow torch.compile for the SageAttention function (requires sageattn 2.2.0 or higher, default: False); `fa2` and `comfy kitchen attention` do not use it
+* **Use Case**: Use this node to run the current model on a specific attention backend without changing ComfyUI's startup arguments. The node patches attention on each model execution and restores the captured backend on cleanup.
 * **Technical Details**:
   * Uses ComfyUI's callback system (ON_PRE_RUN, ON_CLEANUP) to patch attention dynamically
-  * Automatically detects SageAttention version and logs detailed information
-  * Restores the previous attention backend on cleanup; log wording is unchanged and the Flash-Attention line is printed only when Flash-Attention is in use
-  * Compatible with ComfyUI's attention function format via wrap_attn decorator
-  * Supports multiple SageAttention implementations (CUDA, Triton, SageAttention 3)
+  * Logs the resolved build once per run: `Patching comfy attention to use SageAttention <version>+cu<cuda>torch<torch>`, `Patching comfy attention to use Comfy Kitchen <version>+cu<cuda>torch<torch>`, or the `[ComfyUI] Using FA-2/FA-3 (Flash-Attention <version>) direct` line for `fa2`
+  * Restores the previous attention backend on cleanup; an override installed by another component after this node ran is left untouched
+  * Compatible with ComfyUI's attention function format via the wrap_attn decorator
+  * `comfy kitchen attention` resolves the same backend as ComfyUI's own `Model Attention Backend` node and carries its container function, so attention tensor containers take the prequantized path
+  * Node display name is `Patch Accel Attention DM`; the registration key and class name are unchanged
 
 ## Installation
 
@@ -314,7 +315,7 @@ pip install -r requirements.txt
 * For ModelPatchLoader workflows: Always use General Purge VRAM V2 (`clear_model_patches: True`) before upscaling to prevent OOM. Note that patch model format loaded via ModelPatchLoader is an exceptional format different from standard ControlNet models.
 * For Qwen3-VL workflows: Use DisTorchPurgeVRAMV2 with `purge_qwen3vl_models: True` after Qwen3-VL model usage to prevent OOM. The node automatically handles device_map="auto" case for models distributed across multiple devices.
 * For Nunchaku workflows (FLUX/Z-Image/Qwen-Image/SDXL): Use DisTorchPurgeVRAMV2 with `purge_nunchaku_models: True` after Nunchaku model usage to prevent OOM. The node automatically disables CPU offload and clears models from all detection locations (sys.modules, ComfyUI model management, and gc.get_objects()). For Nunchaku SDXL models (v2.2.0), the node now includes cache clearing functionality that can release approximately 2.5GB of VRAM.
-* For SageAttention workflows (v2.3.0): Use Patch Sage Attention DM node to replace ComfyUI's attention mechanism with SageAttention for improved memory efficiency and performance. The node supports multiple SageAttention implementations and automatically patches attention on each model execution. To switch back to the previously configured attention backend, run the node again with `accel_attention` set to `disabled`; to use Flash-Attention explicitly, select `fa2`.
+* For attention backend selection: use the **Patch Accel Attention DM** node to run the current model on a chosen attention backend. Select `auto` or one of the `sageattn_*` modes for SageAttention, `fa2` for Flash-Attention, or `comfy kitchen attention` for Comfy Kitchen INT8. The node patches attention on each model execution and restores the captured backend on cleanup; to restore it explicitly, run the node again with `accel_attention` set to `disabled`.
 * **For multi-process environments (v2.4.0)**: Non-PyTorch VRAM usage (browsers, Discord, OBS, etc.) is now **automatically detected via NVML at startup** and dynamically applied to ComfyUI's memory management (General Manage VRAM). This prevents OOM errors that occur when ComfyUI overestimates available VRAM, ensuring system-wide memory safety without requiring any manual node configuration.
 
 ## License
