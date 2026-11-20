@@ -20,6 +20,134 @@ class AnyType(str):
 
 any = AnyType("*")
 
+# ---------------------------------------------------------------------------
+# ComfyUI 0.38+ fast-disk (comfy-aimdo) and 0.46 per-module pinned memory.
+#
+# Measured on ComfyUI 0.46.0:
+#
+#  * Per-module pins live on the module (comfy/pinned_memory.py: module._pins /
+#    module._pin_state) and hold comfy-aimdo host buffers. Those CUDA
+#    registrations are NOT in comfy.model_management.PINNED_MEMORY, so the
+#    legacy sweep in this node cannot reach them.
+#    ModelPatcher.partially_unload_ram() is ComfyUI's own drain: it flushes a
+#    dirty pin back to its file slice, truncates the host buffer with
+#    do_unregister and keeps TOTAL_PINNED_MEMORY consistent.
+#
+#  * comfy-aimdo native calls are single-thread by design. The HSWQ loader's
+#    comfy_aimdo_fastdisk_guard.py serialises them through one process-wide
+#    RLock and documents what happens when page maps overlap in-flight kernels
+#    (CUDA_ERROR_ILLEGAL_ADDRESS, sticky result=700, abort). Destructive CUDA
+#    work here takes that same lock object and syncs the offload streams first,
+#    so a purge never unmaps a page under an in-flight copy.
+#
+# Every step is independent and prints what it did or why it skipped.
+# ---------------------------------------------------------------------------
+
+_AIMDO_GUARD_SUFFIX = "comfy_aimdo_fastdisk_guard"
+_PURGE_UNBOUNDED = 1 << 60
+
+
+def _purge_aimdo_lock():
+    """Return (lock, module_name) of the HSWQ fast-disk native lock, or (None, None)."""
+    try:
+        items = list(sys.modules.items())
+    except Exception:
+        return None, None
+    for name, mod in items:
+        if mod is None:
+            continue
+        if not str(name).endswith(_AIMDO_GUARD_SUFFIX):
+            continue
+        lock = getattr(mod, "_NATIVE_LOCK", None)
+        if (
+            lock is not None
+            and callable(getattr(lock, "acquire", None))
+            and callable(getattr(lock, "release", None))
+        ):
+            return lock, str(name)
+    return None, None
+
+
+def _purge_sync_offload_streams() -> bool:
+    """Wait for every async offload stream before any destructive CUDA step."""
+    try:
+        import comfy.model_management as mm
+    except Exception:
+        return False
+    fn = getattr(mm, "sync_all_offload_streams", None)
+    if not callable(fn):
+        return False
+    try:
+        fn()
+        return True
+    except Exception as e:
+        print(f"VRAM purge: offload stream sync failed: {e}")
+        return False
+
+
+def _purge_release_ram_cache(free_active: bool = True) -> int:
+    """Release the 0.46 host RAM cache (comfy.memory_management). Returns bytes."""
+    try:
+        import comfy.memory_management as cmm
+    except Exception:
+        return 0
+    fn = getattr(cmm, "extra_ram_release", None)
+    if not callable(fn):
+        return 0
+    try:
+        freed = fn(_PURGE_UNBOUNDED, free_active=free_active)
+    except Exception as e:
+        print(f"VRAM purge: RAM cache release failed: {e}")
+        return 0
+    try:
+        return int(freed or 0)
+    except Exception:
+        return 0
+
+
+def _purge_drain_module_pins() -> dict:
+    """Flush and unregister every per-module pin through ComfyUI's own API.
+
+    Uses __dict__ lookups only (no dir()/getattr probing on foreign objects,
+    which can trigger third-party lazy loaders), one ModelPatcher at a time.
+    """
+    report = {"models": 0, "freed_mb": 0.0, "failed": 0}
+    patchers = []
+    try:
+        for obj in gc.get_objects():
+            if type(obj).__name__ not in ("ModelPatcher", "ModelPatcherDynamic"):
+                continue
+            inner = getattr(obj, "__dict__", {}).get("model", None)
+            if inner is None:
+                continue
+            if "dynamic_pins" not in getattr(inner, "__dict__", {}):
+                continue
+            patchers.append(obj)
+    except Exception as e:
+        print(f"VRAM purge: per-module pin scan failed: {e}")
+        return report
+    for patcher in patchers:
+        try:
+            freed = patcher.partially_unload_ram(_PURGE_UNBOUNDED)
+            report["models"] += 1
+            report["freed_mb"] += float(freed or 0) / (1024 * 1024)
+        except Exception as e:
+            report["failed"] += 1
+            print(f"VRAM purge: pin drain failed for {type(patcher).__name__}: {e}")
+    report["freed_mb"] = round(report["freed_mb"], 1)
+    return report
+
+
+def _purge_quiesce(tag: str) -> None:
+    """Quiesce async copies and release the host RAM cache (no model teardown)."""
+    synced = _purge_sync_offload_streams()
+    freed = _purge_release_ram_cache()
+    print(
+        f"VRAM purge[{tag}]: offload_streams_synced={synced} "
+        f"ram_cache_released={freed / (1024 * 1024):.1f} MB"
+    )
+
+
 class DisTorchPurgeVRAMV2:
     """
     Compatibility clone of the original LayerUtility Purge VRAM V2 node
@@ -51,6 +179,10 @@ class DisTorchPurgeVRAMV2:
         # Toggle label is "HSWQ"; accept legacy "HSWQ INT8" for old workflows.
         purge_hswq_int8 = bool(kwargs.get("HSWQ", kwargs.get("HSWQ INT8", False)))
         purge_ollama = bool(kwargs.get("Ollama", False))
+
+        # 0.46: quiesce async offload copies and release the host RAM cache
+        # before anything in this node unpins, unloads or kills a storage.
+        _purge_quiesce("start")
         global torch
         if purge_cache:
             gc.collect()
@@ -2155,6 +2287,9 @@ class DisTorchPurgeVRAMV2:
         if purge_hswq_int8:
             try:
                 print("HSWQ INT8/NVFP4: Starting purge process...")
+                # fast-disk native lock state (ComfyUI 0.38+ comfy-aimdo)
+                _aimdo_lock = None
+                _aimdo_held = False
                 hswq_cleared = 0
                 bytes_killed = 0
                 pins_unregistered = 0
@@ -3380,6 +3515,22 @@ class DisTorchPurgeVRAMV2:
 
                 # 2) Force HostUnregister every ComfyUI-tracked pin (NOT sys.modules dir/getattr —
                 #    that triggers kornia LazyLoader basicsr install prompts)
+                # Hold the comfy-aimdo native lock and settle async copies: the
+                # steps below unregister host pins and kill CUDA storages.
+                _aimdo_lock, _aimdo_name = _purge_aimdo_lock()
+                if _aimdo_lock is not None:
+                    try:
+                        _aimdo_lock.acquire()
+                        _aimdo_held = True
+                        print(f"HSWQ INT8/NVFP4: comfy-aimdo native lock held ({_aimdo_name})")
+                    except Exception as e_lock:
+                        print(f"HSWQ INT8/NVFP4: comfy-aimdo native lock acquire failed: {e_lock}")
+                else:
+                    print("HSWQ INT8/NVFP4: comfy-aimdo native lock not loaded; proceeding unsynchronised")
+                print(f"HSWQ INT8/NVFP4: offload streams synced={_purge_sync_offload_streams()}")
+                _pin_report = _purge_drain_module_pins()
+                print(f"HSWQ INT8/NVFP4: per-module pin drain -> {_pin_report}")
+
                 print("HSWQ INT8/NVFP4: Method 2 - Force HostUnregister PINNED_MEMORY...")
                 bytes_killed += _force_unregister_comfy_pins()
                 _mem_diag("after_method2")
@@ -3549,6 +3700,14 @@ class DisTorchPurgeVRAMV2:
                 except Exception:
                     pass
 
+                if _aimdo_held:
+                    try:
+                        _aimdo_lock.release()
+                        _aimdo_held = False
+                        print("HSWQ INT8/NVFP4: comfy-aimdo native lock released")
+                    except Exception as e_rel:
+                        print(f"HSWQ INT8/NVFP4: comfy-aimdo native lock release failed: {e_rel}")
+
                 _mem_diag("after")
                 print(
                     f"HSWQ INT8/NVFP4: Done — cleared {hswq_cleared} HSWQ INT8/NVFP4 ref(s), "
@@ -3581,6 +3740,13 @@ class DisTorchPurgeVRAMV2:
                 print(f"HSWQ INT8/NVFP4: Error purging models: {e}")
                 import traceback
                 print(f"HSWQ INT8/NVFP4: Traceback: {traceback.format_exc()}")
+                if _aimdo_held:
+                    try:
+                        _aimdo_lock.release()
+                        _aimdo_held = False
+                        print("HSWQ INT8/NVFP4: comfy-aimdo native lock released after error")
+                    except Exception:
+                        pass
 
         # Purge Ollama VRAM for comfyui-ollama + comfyui-ollama-describer.
         # Both packs talk to the external Ollama server (no in-process torch models).
