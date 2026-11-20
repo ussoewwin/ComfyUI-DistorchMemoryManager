@@ -1,0 +1,450 @@
+# Technical guide: fast-disk serialisation, per-module pin drain and host RAM cache release in General Purge VRAM V2
+
+Measured against ComfyUI 0.46.0 and `ComfyUI-HSWQ-Loader-and-Tools` 3.7.4.
+Implementation commit: `d405c61` (root `purge_vram.py` and `nodes/purge_vram.py`,
+166 added lines each, byte-identical).
+
+---
+
+## 1. What went wrong
+
+The purge node was written against the memory API that ComfyUI exposed up to the
+0.38 line. Three changes after that line left the node operating on an incomplete
+picture while still reporting a successful purge.
+
+### 1.1 Pinned memory moved, and the old sweep cannot see the new pins
+
+ComfyUI 0.46 keeps pins on the module itself:
+
+| element | location |
+| :--- | :--- |
+| pin tables | `module._pins[subset]`, `module._pin_state[subset]` (`comfy/pinned_memory.py`) |
+| backing store | `comfy_aimdo` host buffers (`comfy_aimdo.torch.hostbuf_to_tensor`) |
+| registration bookkeeping | `module._pins[subset]["registered"]`, `comfy.model_management.TOTAL_PINNED_MEMORY` |
+| write-back | `comfy.pinned_memory.flush_pin(module, module_pin)` |
+| full drain | `ModelPatcher.partially_unload_ram()` (`comfy/model_patcher.py:2202`) |
+
+The legacy path is still present and still separate: `comfy.model_management.pin_memory(tensor)`
+records its registrations in `PINNED_MEMORY[ptr]` (`model_management.py:1606`, `:1663`) and
+`unpin_memory(tensor)` (`:1702`) only removes entries found in that dict.
+
+A per-module pin is **not** in `PINNED_MEMORY`. The node's pin sweep therefore reported
+"pins unregistered = N" while the comfy-aimdo registrations and the host buffers holding
+those weights stayed alive.
+
+### 1.2 Fast-disk drives native calls that must not overlap destructive CUDA work
+
+From 0.38 onward, fast-disk is enabled for every loader. The native comfy-aimdo calls are
+single-thread by design: the device context is thread-local, the file reader has one
+completion slot, and stream resolution uses the calling thread's current stream. Every
+native call maps, unmaps or evicts VRAM virtual pages (VBAR / HostBuffer). If a page is
+unmapped while a kernel is still running on another stream, the result is
+`CUDA_ERROR_ILLEGAL_ADDRESS` with a sticky `result=700`, followed by
+`Fatal Python error: Aborted`.
+
+`ComfyUI-HSWQ-Loader-and-Tools` documents exactly this class of failure and serialises the
+native calls through one process-wide re-entrant lock
+(`patches/comfy_aimdo_fastdisk_guard.py:56` `_APPLIED`, `:59` `_NATIVE_LOCK`, docstring of
+the module).
+
+The purge node performed its most destructive operations -- `cudaHostUnregister` on tracked
+host pins, storage kills on INT8/NVFP4 modules, `torch.cuda.empty_cache()` -- without
+taking that lock and without waiting for the async offload streams. A purge could therefore
+unmap a page under an in-flight copy.
+
+### 1.3 The 0.46 host RAM cache was never released
+
+`comfy/memory_management.py` adds a host RAM cache (`RAM_CACHE_HEADROOM` at `:240`,
+`set_ram_cache_release_state()` at `:242`, `extra_ram_release()` at `:248`). The node's
+stated purpose is to recover memory after large models are unloaded, and host RAM is part
+of that surface, but nothing in the node called the release entry point.
+
+### 1.4 Measured state of the node before the change
+
+| symbol the node never referenced | occurrences in `nodes/purge_vram.py` |
+| :--- | ---: |
+| `aimdo` | 0 |
+| `_pin_state` | 0 |
+| `host_buffer` | 0 |
+| `pins_required` | 0 |
+| `free_registrations` | 0 |
+| `ensure_pin` | 0 |
+| `sync_all_offload_streams` | 0 |
+| `extra_ram_release` | 0 |
+| `RAM_CACHE` | 0 |
+| `pinned_memory.flush_pin` | 0 |
+
+The node did reference the legacy surface only: `mm.PINNED_MEMORY`, `mm.TOTAL_PINNED_MEMORY`,
+`mm.unpin_memory`, `mm.discard_cuda_async_error`.
+
+---
+
+## 2. Root cause
+
+One cause, three consequences.
+
+The purge implementation encodes an assumption from the 0.38-era API: *"host pins are the
+entries in `PINNED_MEMORY`, and freeing VRAM is a matter of dropping references and calling
+`empty_cache()`."* Both halves of that assumption stopped being complete:
+
+1. **Pin-state responsibility moved into the module and into comfy-aimdo host buffers.**
+   Dropping a Python reference no longer implies "the registration is released", because
+   the release is a call (`hostbuf.truncate(..., do_unregister=True)`) inside ComfyUI's own
+   drain path. A sweep that only reads `PINNED_MEMORY` is structurally unable to see those
+   pins.
+2. **The destructive operations became concurrent with a native subsystem that forbids
+   concurrency.** Nothing in the node synchronised with the offload streams or with the
+   fast-disk lock, so the node's correctness now depended on timing.
+3. **The recovery target widened to host RAM without the node being told.** The node kept
+   measuring and reporting VRAM only.
+
+The fix therefore has to do three things and nothing else: (a) take the same lock object
+the fast-disk guard uses and settle the streams before the destructive section, (b) drain
+per-module pins through ComfyUI's own API so that flush, unregister and accounting all
+happen in the one place that owns them, and (c) release the host RAM cache.
+
+---
+
+## 3. Files changed
+
+| file | added lines | role |
+| :--- | ---: | :--- |
+| `nodes/purge_vram.py` | 166 | live module; `__init__.py` imports `DisTorchPurgeVRAMV2` from here first |
+| `purge_vram.py` | 166 | root copy kept byte-identical to `nodes/purge_vram.py` |
+
+Both files are 283,733 bytes with the same SHA-256 (`86393456BF07F0C1...`). No other file
+was touched: no version bump, no changelog, no new node input, no change to any other
+family's code path.
+
+---
+
+## 4. The code, verbatim
+
+### 4.1 Module-level helpers (lines 23-148)
+
+```python
+# ---------------------------------------------------------------------------
+# ComfyUI 0.38+ fast-disk (comfy-aimdo) and 0.46 per-module pinned memory.
+#
+# Measured on ComfyUI 0.46.0:
+#
+#  * Per-module pins live on the module (comfy/pinned_memory.py: module._pins /
+#    module._pin_state) and hold comfy-aimdo host buffers. Those CUDA
+#    registrations are NOT in comfy.model_management.PINNED_MEMORY, so the
+#    legacy sweep in this node cannot reach them.
+#    ModelPatcher.partially_unload_ram() is ComfyUI's own drain: it flushes a
+#    dirty pin back to its file slice, truncates the host buffer with
+#    do_unregister and keeps TOTAL_PINNED_MEMORY consistent.
+#
+#  * comfy-aimdo native calls are single-thread by design. The HSWQ loader's
+#    comfy_aimdo_fastdisk_guard.py serialises them through one process-wide
+#    RLock and documents what happens when page maps overlap in-flight kernels
+#    (CUDA_ERROR_ILLEGAL_ADDRESS, sticky result=700, abort). Destructive CUDA
+#    work here takes that same lock object and syncs the offload streams first,
+#    so a purge never unmaps a page under an in-flight copy.
+#
+# Every step is independent and prints what it did or why it skipped.
+# ---------------------------------------------------------------------------
+
+_AIMDO_GUARD_SUFFIX = "comfy_aimdo_fastdisk_guard"
+_PURGE_UNBOUNDED = 1 << 60
+
+
+def _purge_aimdo_lock():
+    """Return (lock, module_name) of the HSWQ fast-disk native lock, or (None, None)."""
+    try:
+        items = list(sys.modules.items())
+    except Exception:
+        return None, None
+    for name, mod in items:
+        if mod is None:
+            continue
+        if not str(name).endswith(_AIMDO_GUARD_SUFFIX):
+            continue
+        lock = getattr(mod, "_NATIVE_LOCK", None)
+        if (
+            lock is not None
+            and callable(getattr(lock, "acquire", None))
+            and callable(getattr(lock, "release", None))
+        ):
+            return lock, str(name)
+    return None, None
+
+
+def _purge_sync_offload_streams() -> bool:
+    """Wait for every async offload stream before any destructive CUDA step."""
+    try:
+        import comfy.model_management as mm
+    except Exception:
+        return False
+    fn = getattr(mm, "sync_all_offload_streams", None)
+    if not callable(fn):
+        return False
+    try:
+        fn()
+        return True
+    except Exception as e:
+        print(f"VRAM purge: offload stream sync failed: {e}")
+        return False
+
+
+def _purge_release_ram_cache(free_active: bool = True) -> int:
+    """Release the 0.46 host RAM cache (comfy.memory_management). Returns bytes."""
+    try:
+        import comfy.memory_management as cmm
+    except Exception:
+        return 0
+    fn = getattr(cmm, "extra_ram_release", None)
+    if not callable(fn):
+        return 0
+    try:
+        freed = fn(_PURGE_UNBOUNDED, free_active=free_active)
+    except Exception as e:
+        print(f"VRAM purge: RAM cache release failed: {e}")
+        return 0
+    try:
+        return int(freed or 0)
+    except Exception:
+        return 0
+
+
+def _purge_drain_module_pins() -> dict:
+    """Flush and unregister every per-module pin through ComfyUI's own API.
+
+    Uses __dict__ lookups only (no dir()/getattr probing on foreign objects,
+    which can trigger third-party lazy loaders), one ModelPatcher at a time.
+    """
+    report = {"models": 0, "freed_mb": 0.0, "failed": 0}
+    patchers = []
+    try:
+        for obj in gc.get_objects():
+            if type(obj).__name__ not in ("ModelPatcher", "ModelPatcherDynamic"):
+                continue
+            inner = getattr(obj, "__dict__", {}).get("model", None)
+            if inner is None:
+                continue
+            if "dynamic_pins" not in getattr(inner, "__dict__", {}):
+                continue
+            patchers.append(obj)
+    except Exception as e:
+        print(f"VRAM purge: per-module pin scan failed: {e}")
+        return report
+    for patcher in patchers:
+        try:
+            freed = patcher.partially_unload_ram(_PURGE_UNBOUNDED)
+            report["models"] += 1
+            report["freed_mb"] += float(freed or 0) / (1024 * 1024)
+        except Exception as e:
+            report["failed"] += 1
+            print(f"VRAM purge: pin drain failed for {type(patcher).__name__}: {e}")
+    report["freed_mb"] = round(report["freed_mb"], 1)
+    return report
+
+
+def _purge_quiesce(tag: str) -> None:
+    """Quiesce async copies and release the host RAM cache (no model teardown)."""
+    synced = _purge_sync_offload_streams()
+    freed = _purge_release_ram_cache()
+    print(
+        f"VRAM purge[{tag}]: offload_streams_synced={synced} "
+        f"ram_cache_released={freed / (1024 * 1024):.1f} MB"
+    )
+```
+
+### 4.2 Entry point of the node (lines 183-185)
+
+```python
+        # 0.46: quiesce async offload copies and release the host RAM cache
+        # before anything in this node unpins, unloads or kills a storage.
+        _purge_quiesce("start")
+```
+
+### 4.3 Lock state initialisation inside the HSWQ branch (lines 2290-2292)
+
+```python
+                # fast-disk native lock state (ComfyUI 0.38+ comfy-aimdo)
+                _aimdo_lock = None
+                _aimdo_held = False
+```
+
+### 4.4 Acquire, stream sync and pin drain before the destructive section (lines 3518-3532)
+
+```python
+                # Hold the comfy-aimdo native lock and settle async copies: the
+                # steps below unregister host pins and kill CUDA storages.
+                _aimdo_lock, _aimdo_name = _purge_aimdo_lock()
+                if _aimdo_lock is not None:
+                    try:
+                        _aimdo_lock.acquire()
+                        _aimdo_held = True
+                        print(f"HSWQ INT8/NVFP4: comfy-aimdo native lock held ({_aimdo_name})")
+                    except Exception as e_lock:
+                        print(f"HSWQ INT8/NVFP4: comfy-aimdo native lock acquire failed: {e_lock}")
+                else:
+                    print("HSWQ INT8/NVFP4: comfy-aimdo native lock not loaded; proceeding unsynchronised")
+                print(f"HSWQ INT8/NVFP4: offload streams synced={_purge_sync_offload_streams()}")
+                _pin_report = _purge_drain_module_pins()
+                print(f"HSWQ INT8/NVFP4: per-module pin drain -> {_pin_report}")
+```
+
+### 4.5 Release on the normal path (lines 3703-3709)
+
+```python
+                if _aimdo_held:
+                    try:
+                        _aimdo_lock.release()
+                        _aimdo_held = False
+                        print("HSWQ INT8/NVFP4: comfy-aimdo native lock released")
+                    except Exception as e_rel:
+                        print(f"HSWQ INT8/NVFP4: comfy-aimdo native lock release failed: {e_rel}")
+```
+
+### 4.6 Release when the branch raises (lines 3743-3749)
+
+```python
+                if _aimdo_held:
+                    try:
+                        _aimdo_lock.release()
+                        _aimdo_held = False
+                        print("HSWQ INT8/NVFP4: comfy-aimdo native lock released after error")
+                    except Exception:
+                        pass
+```
+
+---
+
+## 5. What it means
+
+### 5.1 `_purge_aimdo_lock()`
+
+Returns the guard's own lock object, not a copy and not a new lock. Two properties matter:
+
+- **Identity.** `lock is guard._NATIVE_LOCK` is true, so the purge and the loader's native
+  wrappers contend on the same object. A second lock would exclude nothing.
+- **Discovery by suffix.** The module is looked up in `sys.modules` by the name suffix
+  `comfy_aimdo_fastdisk_guard`, because ComfyUI registers custom nodes under a
+  folder-derived package name (`ComfyUI-HSWQ-Loader-and-Tools.patches.comfy_aimdo_fastdisk_guard`).
+  Matching the suffix avoids depending on the folder name.
+
+`None, None` means the guard is not loaded: the caller prints that fact and proceeds.
+
+### 5.2 `_purge_sync_offload_streams()`
+
+`comfy.model_management.sync_all_offload_streams()` waits on every stream in `STREAMS`, and
+falls back to `synchronize()` when no streams exist (`model_management.py:1534`). It is the
+only core call that guarantees no copy is still in flight on the offload streams, which is
+precisely the condition that must hold before a page is unmapped.
+
+`False` is returned when the module, the function or the call is unavailable; the boolean is
+printed, so a skipped sync is visible instead of assumed.
+
+### 5.3 `_purge_release_ram_cache()`
+
+`comfy.memory_management.extra_ram_release(target, free_active=True)` forwards to the cache
+callback registered by `set_ram_cache_release_state()` and returns the bytes it released, or
+0 when no callback is registered yet (a process that has not loaded a model). The request
+size is `1 << 60`, i.e. "release everything releasable"; the callback clamps to what exists.
+
+`free_active=True` also allows releasing cache entries that belong to the active prompt,
+matching what the node is asked to do: a purge by definition discards the current residency.
+
+### 5.4 `_purge_drain_module_pins()`
+
+This is the only correct release path for the 0.46 pins, because
+`ModelPatcher.partially_unload_ram()` performs four steps in order
+(`comfy/model_patcher.py:2202-2227`):
+
+1. `comfy.pinned_memory.flush_pin(module, module_pin)` -- writes a dirty pin back to its file
+   slice so a fast-disk-backed weight is not left stale on disk.
+2. `hostbuf.truncate(offset, do_unregister=registered)` -- releases the registration.
+3. `TOTAL_PINNED_MEMORY -= size` and `pinned_size[0] -= size` -- keeps the accounting true.
+4. `stack_split[0]` update -- keeps the balancer's stack index valid.
+
+Repeating those four steps by hand would duplicate core logic and would drift on the next
+core change. Calling the drain also means a mismatch cannot be introduced between the
+registration state and the bookkeeping.
+
+Scan safety: the scan accepts an object only when `type(obj).__name__` is `ModelPatcher` or
+`ModelPatcherDynamic` **and** the object's own `__dict__` contains `model`, **and** that
+inner object's own `__dict__` contains `dynamic_pins`. No `dir()` and no `getattr` probing on
+arbitrary objects, because third-party lazy loaders answer `__getattr__` by installing
+packages.
+
+One patcher at a time, each in its own `try`: a failure increments `failed` and prints the
+exception, and the remaining patchers are still processed. The returned dict
+`{"models": n, "freed_mb": x, "failed": k}` is printed by the caller.
+
+### 5.5 `_purge_quiesce(tag)`
+
+Entry-point composition: sync the streams, release the RAM cache, print one line with the
+boolean and the released byte count. It deliberately does **not** touch models: at node
+entry the graph may still need them, and the drain belongs to the explicit HSWQ section.
+
+### 5.6 The lock's critical section and its two release points
+
+The lock is taken immediately before Method 2 (the `cudaHostUnregister` sweep), stays held
+across Method 3 (the gc nuclear storage kill) and Method 2c (the comfy_kitchen cache reset),
+and is released after `soft_empty_cache()`. The section therefore covers every operation that
+can unmap a page.
+
+Two release points exist because the branch is wrapped in `try / except`:
+
+- the normal path releases after the last CUDA call in the branch (line 3703);
+- the `except` that reports `Error purging models` releases as well (line 3743).
+
+`_aimdo_held` is initialised to `False` at the top of the branch, so the `except` can never
+reference an undefined name, and a second release cannot happen.
+
+`threading.RLock` is re-entrant: taking it twice on the same thread is safe, which matters
+because the loader's wrappers may already hold it earlier in the same call chain.
+
+### 5.7 Why the ordering is fixed
+
+| step | why it must come before the next |
+| :--- | :--- |
+| stream sync | a page unmap while a copy is in flight is the documented abort |
+| lock acquire | the guard's native calls retire the reader slot; the purge must not interleave |
+| pin drain | flush must happen while the module and its file slice are still reachable |
+| pin unregister (Method 2) | legacy sweep stays after the drain so accounting is already settled |
+| storage kill (Method 3) | the last step, after flush and unregister |
+| kitchen reset (2c) | resets workspaces whose storages the kill has already released |
+| lock release | only after the last CUDA call |
+
+---
+
+## 6. Verification performed
+
+| check | result |
+| :--- | :--- |
+| `py_compile` on both files | exit 0 |
+| module import with the probe harness | loads, no import-time side effect |
+| `_purge_quiesce` with `comfy` unavailable | `offload_streams_synced=False`, `ram_cache_released=0.0 MB`, no exception |
+| `_purge_quiesce` with `comfy` present | `offload_streams_synced=True`, `ram_cache_released=0.0 MB` (no model loaded, callback not registered) |
+| `_purge_aimdo_lock()` against the real guard | lock found, `lock is guard._NATIVE_LOCK` true, name = the loader package path |
+| mutual exclusion | with the guard holding the lock, the purge's acquire blocked 0.400 s |
+| `_purge_drain_module_pins()` with no models | `{"models": 0, "freed_mb": 0.0, "failed": 0}` |
+| `_purge_drain_module_pins()` with a patcher-shaped object | `{"models": 1, "freed_mb": 4.0, "failed": 0}` |
+| `ModelPatcher.partially_unload_ram` signature | `(self, ram_to_unload)` -- the call passes exactly one positional argument |
+| `INPUT_TYPES` | 9 keys, unchanged |
+| `purge_vram` with every toggle off | returns `('*',)` |
+| dev/live file hashes | equal for both files |
+
+Behaviour on older installations is unchanged by construction: without the guard the node
+prints `comfy-aimdo native lock not loaded; proceeding unsynchronised` and continues; without
+`comfy.memory_management` the release returns 0; without per-module pins the drain returns
+zero counts.
+
+## 7. Limits
+
+The pin drain has not been measured with a real model loaded in this environment: the
+measured evidence covers lock identity, mutual exclusion, the core signature, the dispatch
+path and every skip path. The drain's own release amount on a live model is core-owned
+behaviour and is exercised by `ModelPatcher.partially_unload_ram()`.
+
+## 8. Constraints kept
+
+- No change to the legacy `PINNED_MEMORY` sweep, to Method 2c, to Method 2d, or to the
+  ordering of the per-family purges.
+- No new node input and no new toggle.
+- No absolute path, no environment-specific value in the code.
+- Root and `nodes/purge_vram.py` are byte-identical, as the package requires.
