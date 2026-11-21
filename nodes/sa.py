@@ -8,6 +8,11 @@ from comfy.ldm.modules.attention import wrap_attn
 from comfy.patcher_extension import CallbacksMP
 from comfy.cli_args import args
 
+try:
+    from . import device_backend as _db
+except ImportError:
+    import device_backend as _db
+
 # Import model_management safely (may fail during module import)
 try:
     import comfy.model_management as mm
@@ -32,6 +37,14 @@ def _gqa_expand_kv(k, v, query_heads, head_dim):
 
 def _current_cuda_arch():
     """Return the SM name of the active CUDA device (e.g. "sm120")."""
+    if _db.is_amd():
+        # ROCm has no SM numbering. torch itself reads gcnArchName under
+        # "if torch.version.hip" (torch/cuda/__init__.py), so report that
+        # instead of a fabricated smXY.
+        try:
+            return str(torch.cuda.get_device_properties().gcnArchName)
+        except Exception:
+            return "rocm"
     if not torch.cuda.is_available():
         return ""
     major, minor = torch.cuda.get_device_capability()
@@ -285,6 +298,22 @@ def make_comfy_kitchen_override_dm(attention_function):
     return optimized_attention_override
 
 
+def _sage_package_probe():
+    """Return (available, reason) for the sageattention package.
+
+    The selector menu is static, so the only way to know whether a mode can
+    run on this machine is to try the import at run time. Reporting the real
+    exception keeps the CUDA-without-the-package case on the same path the
+    fa2 branch already uses ("reason + restore"), instead of an ImportError
+    raised out of the ON_PRE_RUN callback.
+    """
+    try:
+        import sageattention  # noqa: F401
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, e)
+    return True, ""
+
+
 def get_sage_func_dm(sage_attention, allow_compile=False):
     # SA3 uses separate logging, so only log SA2 info for non-SA3 modes
     if "sageattn3" not in sage_attention:
@@ -535,6 +564,21 @@ class PatchSageAttentionDM():
             if accel_attention == "disabled":
                 _restore_previous(m, prev_override, prev_global_attn, report_flash=False)
                 return
+
+            # The sage modes import from sageattention inside the resolver; check
+            # the package here so a missing install degrades with a reason instead
+            # of raising out of this callback.
+            if accel_attention not in ("disabled", "comfy kitchen attention", "fa2"):
+                _sage_ok, _sage_reason = _sage_package_probe()
+                if not _sage_ok:
+                    logging.error(
+                        "Cannot use the '%s' mode because the sageattention package "
+                        "could not be imported (%s); keeping the previously "
+                        "configured attention backend."
+                        % (accel_attention, _sage_reason)
+                    )
+                    _restore_previous(m, prev_override, prev_global_attn, report_flash=True)
+                    return
 
             if accel_attention == "comfy kitchen attention":
                 new_override = make_comfy_kitchen_override_dm(get_comfy_kitchen_func_dm())

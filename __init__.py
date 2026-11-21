@@ -4,6 +4,12 @@ import torch
 import gc
 import logging
 
+try:
+    from .nodes import device_backend
+except Exception as _backend_err:
+    device_backend = None
+    print(f"[ComfyUI-VRAM-Manager] WARNING: backend capability module unavailable: {_backend_err}")
+
 __version__ = "2.5.3"
 
 # Ensure ComfyUI root is on sys.path
@@ -147,6 +153,13 @@ def _install_general_vram_management():
     Startup patch: auto-detect non-PyTorch VRAM usage (browsers, other apps)
     via NVML and apply general manage VRAM patch to ComfyUI memory management at load time.
     """
+    if device_backend is None:
+        print("[ComfyUI-VRAM-Manager] INFO: backend capability module unavailable; startup VRAM patch skipped.")
+        return
+    if not device_backend.is_nvidia_build():
+        _backend_label = "AMD" if device_backend.is_amd() else ("XPU" if device_backend.is_xpu() else "non-NVIDIA")
+        print(f"[ComfyUI-VRAM-Manager] INFO: {_backend_label} backend detected; startup VRAM patch skipped (NVML is NVIDIA-only).")
+        return
     _ensure_nvidia_ml_py_latest()
 
     try:

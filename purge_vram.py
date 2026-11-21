@@ -8,6 +8,15 @@ import os
 import logging
 import importlib
 
+# Backend capability helpers. The dual form keeps this file byte-identical
+# to the root copy: here '.device_backend' resolves to this package's
+# device_backend, while the root copy's first branch fails and the except
+# branch reaches '.nodes.device_backend'.
+try:
+    from . import device_backend as _db
+except ImportError:
+    from .nodes import device_backend as _db
+
 # AnyType mirrors the behavior of the original Purge VRAM node
 class AnyType(str):
     """A special class that is always equal in not equal comparisons. Credit to pythongosssss"""
@@ -187,6 +196,9 @@ class DisTorchPurgeVRAMV2:
         if purge_cache:
             gc.collect()
 
+            if _db.is_xpu():
+                _xpu_cleared = _db.xpu_clear_cache_all_devices()
+                print(f"VRAM purge: cleared the XPU cache on {_xpu_cleared} device(s)")
             if torch.cuda.is_available():
                 current_device = torch.cuda.current_device()
                 try:
@@ -247,6 +259,10 @@ class DisTorchPurgeVRAMV2:
                     if hasattr(comfy.model_management, "cleanup_models_gc"):
                         comfy.model_management.cleanup_models_gc()
 
+                if _db.is_xpu():
+                    _db.xpu_synchronize()
+                    _db.xpu_empty_cache()
+                    print("GPU memory cleared (XPU)")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     torch.cuda.synchronize()
@@ -498,6 +514,13 @@ class DisTorchPurgeVRAMV2:
                     if hasattr(mm, "unload_all_models") and callable(mm.unload_all_models):
                         mm.unload_all_models()
                         print("unload_all_models() issued")
+                    if _db.is_xpu() and hasattr(mm, "free_memory") and callable(mm.free_memory):
+                        for di in range(_db.xpu_device_count()):
+                            try:
+                                mm.free_memory(1e30, torch.device(_db.xpu_device_string(di)))
+                            except Exception as e:
+                                print(f"free_memory({_db.xpu_device_string(di)}) warning: {e}")
+                        print("free_memory(1e30) issued for all XPU devices")
                     if torch.cuda.is_available() and hasattr(mm, "free_memory") and callable(mm.free_memory):
                         for di in range(torch.cuda.device_count()):
                             try:
@@ -1103,6 +1126,9 @@ class DisTorchPurgeVRAMV2:
                     print("Qwen3-VL: Running garbage collection...")
                     gc.collect()
                     gc.collect()  # Run twice to ensure cleanup
+                    if _db.is_xpu():
+                        _xpu_cleared = _db.xpu_clear_cache_all_devices()
+                        print(f"Qwen3-VL: Clearing XPU cache... ({_xpu_cleared} device(s))")
                     if torch.cuda.is_available():
                         print("Qwen3-VL: Clearing CUDA cache...")
                         # Clear cache for all devices
@@ -2251,6 +2277,9 @@ class DisTorchPurgeVRAMV2:
                     gc.collect()
                     gc.collect()  # Run twice to ensure cleanup
                     gc.collect()  # Run third time for more aggressive cleanup
+                    if _db.is_xpu():
+                        _xpu_cleared = _db.xpu_clear_cache_all_devices()
+                        print(f"Nunchaku: Clearing XPU cache... ({_xpu_cleared} device(s))")
                     if torch.cuda.is_available():
                         print("Nunchaku: Clearing CUDA cache...")
                         # Clear cache for all devices (more aggressively)
@@ -2311,6 +2340,21 @@ class DisTorchPurgeVRAMV2:
                         )
                     except Exception as e:
                         print(f"HSWQ INT8/NVFP4: [{tag}] pin diag failed: {e}")
+                    if _db.is_xpu():
+                        try:
+                            for di in range(_db.xpu_device_count()):
+                                _alloc = _db.xpu_memory_allocated(di)
+                                _reserved = _db.xpu_memory_reserved(di)
+                                _free_b, _total_b = _db.xpu_mem_get_info(di)
+                                _used_sys = max(0, _total_b - _free_b)
+                                print(
+                                    f"HSWQ INT8/NVFP4: [{tag}] xpu:{di} "
+                                    f"allocated={_alloc / (1024 ** 3):.2f}GB "
+                                    f"reserved={_reserved / (1024 ** 3):.2f}GB "
+                                    f"sys_used={_used_sys / (1024 ** 3):.2f}GB"
+                                )
+                        except Exception as e:
+                            print(f"HSWQ INT8/NVFP4: [{tag}] xpu diag failed: {e}")
                     if torch.cuda.is_available():
                         try:
                             for di in range(torch.cuda.device_count()):
@@ -3093,6 +3137,12 @@ class DisTorchPurgeVRAMV2:
                         f"HSWQ INT8/NVFP4: Force-unregister PINNED_MEMORY "
                         f"before={before / (1024 * 1024):.1f} MB entries={len(pinned)}"
                     )
+                    if not _db.host_pin_supported():
+                        print(
+                            "HSWQ INT8/NVFP4: host-pin unregister skipped "
+                            f"(no cudart on this backend, entries={len(pinned)})"
+                        )
+                        return 0
                     for ptr, size in list(pinned.items()):
                         try:
                             if torch.cuda.cudart().cudaHostUnregister(int(ptr)) == 0:
@@ -3493,6 +3543,10 @@ class DisTorchPurgeVRAMV2:
                     except Exception as e:
                         print(f"HSWQ INT8/NVFP4: unload_all_models warning: {e}")
                     try:
+                        if _db.is_xpu() and hasattr(mm, "free_memory"):
+                            for di in range(_db.xpu_device_count()):
+                                mm.free_memory(1e30, torch.device(_db.xpu_device_string(di)))
+                            print("HSWQ INT8/NVFP4: free_memory(1e30) issued for all XPU devices")
                         if torch.cuda.is_available() and hasattr(mm, "free_memory"):
                             for di in range(torch.cuda.device_count()):
                                 mm.free_memory(1e30, torch.device(f"cuda:{di}"))
@@ -3673,6 +3727,9 @@ class DisTorchPurgeVRAMV2:
                 print("HSWQ INT8/NVFP4: Running garbage collection...")
                 gc.collect()
                 gc.collect()
+                if _db.is_xpu():
+                    _xpu_cleared = _db.xpu_clear_cache_all_devices()
+                    print(f"HSWQ INT8/NVFP4: Clearing XPU cache... ({_xpu_cleared} device(s))")
                 if torch.cuda.is_available():
                     print("HSWQ INT8/NVFP4: Clearing CUDA cache...")
                     for device_idx in range(torch.cuda.device_count()):

@@ -4,20 +4,35 @@ Memory Manager nodes for DistorchMemoryManager
 import torch
 import gc
 
-# Safe import for pynvml (NVIDIA Management Library)
+# Backend capability helpers. The dual form keeps this file byte-identical
+# to the root copy (same reason as nodes/purge_vram.py).
 try:
-    import pynvml
-    try:
-        pynvml.nvmlInit()
-        _pynvml_available = True
-    except Exception as e:
-        _pynvml_available = False
-        pynvml = None
-        print(f"[ComfyUI-VRAM-Manager] WARNING: pynvml imported but NVML init failed: {e}")
+    from . import device_backend as _db
 except ImportError:
+    from .nodes import device_backend as _db
+
+# Safe import for pynvml (NVIDIA Management Library)
+# NVML exists only on NVIDIA builds; on any other backend the probe is
+# skipped with one line instead of initialising a library that cannot work.
+if not _db.is_nvidia_build():
     _pynvml_available = False
     pynvml = None
-    print("[ComfyUI-VRAM-Manager] INFO: pynvml (nvidia-ml-py) not installed. general_manage_vram will be unavailable.")
+    _backend_label = "AMD" if _db.is_amd() else ("XPU" if _db.is_xpu() else "non-NVIDIA")
+    print(f"[ComfyUI-VRAM-Manager] INFO: {_backend_label} backend detected; NVML is NVIDIA-only, so general_manage_vram stays unavailable.")
+else:
+    try:
+        import pynvml
+        try:
+            pynvml.nvmlInit()
+            _pynvml_available = True
+        except Exception as e:
+            _pynvml_available = False
+            pynvml = None
+            print(f"[ComfyUI-VRAM-Manager] WARNING: pynvml imported but NVML init failed: {e}")
+    except ImportError:
+        _pynvml_available = False
+        pynvml = None
+        print("[ComfyUI-VRAM-Manager] INFO: pynvml (nvidia-ml-py) not installed. general_manage_vram will be unavailable.")
 
 
 def get_non_torch_vram_usage_bytes():
@@ -62,6 +77,9 @@ def clear_memory():
     import gc
     # Cleanup
     gc.collect()
+    if _db.is_xpu():
+        _db.xpu_synchronize()
+        _db.xpu_empty_cache()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
@@ -88,6 +106,10 @@ class MemoryManager:
 
     def manage_memory(self, anything, clean_gpu, clean_cpu, force_gc, reset_virtual_memory, restore_original_functions):
         try:
+            if clean_gpu and _db.is_xpu():
+                _db.xpu_synchronize()
+                _db.xpu_empty_cache()
+                print("GPU memory cleared (XPU)")
             if clean_gpu and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
@@ -107,6 +129,14 @@ class MemoryManager:
                     if hasattr(comfy.model_management, 'free_memory'):
                         # Request a huge free so Comfy actually unloads / empties CUDA.
                         # free_memory(0, ...) is a no-op and left Krea2 NVFP4 ~9GB resident.
+                        if _db.is_xpu():
+                            try:
+                                for di in range(_db.xpu_device_count()):
+                                    comfy.model_management.free_memory(
+                                        1e30, torch.device(_db.xpu_device_string(di))
+                                    )
+                            except Exception as e:
+                                print(f"Virtual memory reset (XPU) failed: {e}")
                         if torch.cuda.is_available():
                             try:
                                 for di in range(torch.cuda.device_count()):
@@ -156,6 +186,10 @@ class SafeMemoryManager:
 
     def safe_manage_memory(self, anything, clean_gpu, force_gc, reset_virtual_memory):
         try:
+            if clean_gpu and _db.is_xpu():
+                _db.xpu_synchronize()
+                _db.xpu_empty_cache()
+                print("Safe GPU memory cleared (XPU)")
             if clean_gpu and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
@@ -170,6 +204,14 @@ class SafeMemoryManager:
                     import comfy.model_management
                     if hasattr(comfy.model_management, 'free_memory'):
                         # free_memory(0, ...) is a no-op; request a huge free on all devices.
+                        if _db.is_xpu():
+                            try:
+                                for di in range(_db.xpu_device_count()):
+                                    comfy.model_management.free_memory(
+                                        1e30, torch.device(_db.xpu_device_string(di))
+                                    )
+                            except Exception as e:
+                                print(f"Safe virtual memory reset (XPU) failed: {e}")
                         if torch.cuda.is_available():
                             try:
                                 for di in range(torch.cuda.device_count()):

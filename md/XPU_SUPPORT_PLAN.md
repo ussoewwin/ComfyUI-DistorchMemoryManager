@@ -162,7 +162,7 @@ Non-torch CUDA dependencies:
 | :--- | :--- | :--- |
 | A | 190-201 | `purge_cache`: iterate devices, `empty_cache`, `ipc_collect`, restore device |
 | B | 250-252 | `clear_model_patches` tail: `empty_cache` + `synchronize` |
-| C | 501-507 | SeedVR2 hard free: `free_memory(1e30, torch.device(f"cuda:{di}"))` per device |
+| C | 501-507 | `purge_models` hard free (`unload_all_models` then `free_memory(1e30, torch.device(f"cuda:{di}"))` per device) |
 | D | 986-1105 | Qwen3-VL: gc sweep for model instances and its nested handlers; the cache clear is cluster E |
 | E | 1106-1114 | Qwen3-VL tail: per-device `empty_cache` / `ipc_collect` / `synchronize` |
 | F | 2006 | Nunchaku Method 3: gc sweep for model instances |
@@ -309,16 +309,18 @@ so the CUDA path still wins there.
 
 | function | returns |
 | :--- | :--- |
-| `xpu_available()` | `is_xpu()` memoised on **first call**, not at import, so a probe taken while ComfyUI is still initialising cannot freeze a wrong answer |
-| `device_count()` | `torch.xpu.device_count()` inside `try`, `0` on exception |
-| `current_device()` / `set_device(i)` | passthrough inside `try` |
-| `empty_cache()` | `torch.xpu.empty_cache()` inside `try` |
-| `synchronize()` | `torch.xpu.synchronize()` inside `try` |
-| `mem_get_info(i)` | `torch.xpu.mem_get_info(i)` inside `try`, `(0, 0)` on exception |
-| `memory_allocated(i)` / `memory_reserved(i)` | passthrough inside `try`, `0` on exception |
-| `ipc_collect()` | returns `False` — capability absent on `torch.xpu` |
-| `unregister_host_pin(ptr)` | returns `False` — capability absent on `torch.xpu` |
-| `device_string(i)` | `"xpu:{i}"` — the XPU counterpart of the literal `f"cuda:{di}"` |
+| `is_nvidia_build()` | build flag `torch.version.cuda`; gates the NVML paths without changing a CUDA build in any run mode |
+| `is_amd()` / `is_xpu()` | ComfyUI flag first (`mm.is_amd` / `mm.is_intel_xpu`, authoritative), else the torch probe on the call result; memoised only when the authoritative flag was used |
+| `xpu_device_count()` | `torch.xpu.device_count()` inside `try`, `0` on exception |
+| `xpu_current_device()` / `xpu_set_device(i)` | passthrough inside `try` |
+| `xpu_empty_cache()` / `xpu_synchronize()` | passthrough inside `try`, `False` on exception |
+| `xpu_mem_get_info(i)` | `torch.xpu.mem_get_info(i)` inside `try`, `(0, 0)` on exception |
+| `xpu_memory_allocated(i)` / `xpu_memory_reserved(i)` | passthrough inside `try`, `0` on exception |
+| `xpu_ipc_collect()` | returns `False` — capability absent on `torch.xpu` |
+| `xpu_device_string(i)` | `"xpu:{i}"` — the XPU counterpart of the literal `f"cuda:{di}"` |
+| `xpu_clear_cache_all_devices()` | synchronise + empty on every device; returns the number emptied and prints one line when a build cannot synchronise |
+| `host_pin_supported()` | `torch.cuda.cudart()` present and exposing `cudaHostUnregister` |
+| `unregister_host_pin(ptr)` | `True` when the unregister call succeeded, `False` when unsupported or refused |
 | `capability_report()` | the exact booleans above, for one log line |
 
 The module never references `torch.cuda` except inside `is_xpu()`'s arbitration, and it touches
@@ -347,7 +349,7 @@ implementation reaches for and it violates constraint 1.
 | :--- | :--- | :--- | :--- |
 | `nodes/purge_vram.py` | A, B, E, G, K | S2 — each becomes `_clear_cache_all_devices()`, called once per site; the XPU branch clears `xpu` and returns before the CUDA statements; the AMD branch falls through to the unchanged CUDA statements | 1 helper + 5 one-line call sites |
 | | C, J | S2 — the `free_memory` call moves into `_free_all_devices()`, which picks `f"cuda:{di}"` or `device_backend.device_string(di)`; on AMD the `cuda:` form is used | 1 helper |
-| | D, F | S1 | 2 inserted guards |
+| | D, F | **no change** — both are already inside `if torch.cuda.is_available():` (measured `:986`, `:2006`), so they are already skipped on a non-CUDA backend. A guard would be dead code | 0 lines |
 | | H | S2 — `_mem_diag` prints an `xpu` line when `is_xpu()` | 1 branch inside `_mem_diag` |
 | | I | S1 — the new `device_backend.unregister_host_pin()` returns `False` and the skipped count is reported, naming the backend | 1 branch + 1 counter |
 | `nodes/memory_manager.py` | L | S2 — `get_non_torch_vram_usage_bytes()` (the real name; it is the only function at `:23-43`) keeps returning `None` and gains the log line only: on XPU with `[XPU]`, on AMD with `[AMD]`; the current code already returns `None` when CUDA is absent | 1 log branch |
@@ -460,9 +462,9 @@ verbatim into both files:
 
 ```python
 try:
-    from .device_backend import is_amd, is_xpu, device_string, unregister_host_pin
+    from . import device_backend as _db
 except ImportError:
-    from .nodes.device_backend import is_amd, is_xpu, device_string, unregister_host_pin
+    from .nodes import device_backend as _db
 ```
 
 Why it resolves: `nodes/purge_vram.py` is imported as `<pkg>.nodes.purge_vram`, so `.device_backend`
@@ -585,3 +587,53 @@ exact v2.5.3 tree.
 Acceptance: the diff contains additions only for the CUDA path, every cluster has a fake-backend
 test, `is_xpu()` and `is_amd()` are both measured `False` on this machine, both root/`nodes`
 copies stay byte-identical, and the release states the hardware verification gap for each arm.
+
+---
+
+## 10. Implementation record (measured)
+
+Implemented on 2026-11-21 in this worktree. Not committed and not pushed at the time of
+writing; the live custom-node copy has been synced.
+
+| file | change |
+| :--- | :--- |
+| `nodes/device_backend.py` | new, 7,534 B (gates, `xpu_*` helpers, capability report) |
+| `__init__.py` | +13 lines (startup guard before the pip upgrade and the NVML import) |
+| `nodes/purge_vram.py` | +57 lines, mirrored byte-for-byte to `purge_vram.py` |
+| `nodes/memory_manager.py` | +42 lines, mirrored byte-for-byte to `memory_manager.py` |
+| `nodes/sa.py` | +44 lines (`gcnArchName` label, sage package probe, call-site guard) |
+
+Diff audit: `git diff -w --numstat` shows additions only and zero deletions. The raw diff has
+20 removed lines, all of them the re-indented NVML probe in the two `memory_manager.py` copies;
+zero removed lines contain `torch.cuda` or `torch.xpu`.
+
+Verification executed on this machine (torch 2.15.0+cu134, ComfyUI 0.46.0):
+
+- gates: `is_xpu()` False, `is_amd()` False, `is_nvidia_build()` True, `host_pin_supported()` True,
+  `xpu_is_available` False, `xpu_device_count` 0, `hip` None, `cuda` "13.4".
+- `INPUT_TYPES` unchanged: purge 9 keys with `RETURN_TYPES` `('*',)`, `MemoryManager` 6 keys,
+  `SafeMemoryManager` 4 keys.
+- node level, gate closed: `MemoryManager` and `SafeMemoryManager` print the unchanged CUDA line
+  and return `('x',)`.
+- node level, gate forced: the XPU block runs (synchronise + empty per device, "GPU memory cleared
+  (XPU)") and the node still returns `('x',)`.
+- fake XPU with 2 devices: `xpu_clear_cache_all_devices()` 2, two empty calls, two sync calls,
+  `xpu_device_string(1)` "xpu:1", `xpu_mem_get_info(0)` (1024, 2048).
+- hostile fake whose `synchronize` raises `AssertionError`: `xpu_synchronize()` False, one warning
+  line printed, no exception escapes.
+- `py_compile` on the worktree and on the live copies: exit 0.
+- mirror: `purge_vram.py` == `nodes/purge_vram.py` (`E9BE668CA9F4FBBA`), `memory_manager.py` ==
+  `nodes/memory_manager.py` (`787E0BE6AE6EB667`).
+- live sync: content equal to the worktree for all seven files (EOL normalised, the live tree is a
+  CRLF checkout); no live file had uncommitted edits before the sync (content equalled `HEAD`).
+
+Deviations from the plan above, each measured rather than assumed:
+
+1. Cluster C is the `purge_models` hard free, not the SeedVR2 path (§2.3 label corrected).
+2. Clusters D and F need no change: both already sit inside `if torch.cuda.is_available():`
+   (`:986`, `:2006`), so they are already skipped on a non-CUDA backend and a guard would be dead
+   code.
+3. The helpers carry an `xpu_` prefix, and `is_nvidia_build()` / `host_pin_supported()` were added.
+4. The shared import is `from . import device_backend as _db` — the same dual form, one name.
+5. On a dual CUDA+XPU build both arms print, because the CUDA block cannot be re-gated without
+   editing its condition. The extra clear targets a device the run is not using.
